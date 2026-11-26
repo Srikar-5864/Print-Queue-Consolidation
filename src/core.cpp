@@ -243,7 +243,7 @@ static IntArr TL_JOBS, TL_TIMES, TL_DEPTS;                     // flat timeline 
 static int   RECEIVED, ACTIVE, ST_ins, ST_ext, ST_cmp, ST_alg;
 static IntArr LOG, LOGIDX, EX;        // step log, log index, export buffer
 static int   BENCH[5];
-static int*  SP; static int SPcap, SPf, SPr, SPn;              // circular queue
+static int*  SP; static int SPcap, SPf, SPr, SPn, SPpaused;    // circular queue
 
 // ---------------------------------------------------------------- scheduler (A6)
 #define MAX_PRINTERS 10
@@ -538,7 +538,7 @@ API int log_field(int i, int f) {
 API void spool_init(int cap) {
     delete[] SP;
     if (cap < 1) cap = 1;
-    SP = new int[cap]; SPcap = cap; SPf = SPr = SPn = 0;
+    SP = new int[cap]; SPcap = cap; SPf = SPr = SPn = 0; SPpaused = 0;
     for (int i = 0; i < cap; i++) SP[i] = -1;
 }
 API int spool_enqueue(int job) {
@@ -547,6 +547,7 @@ API int spool_enqueue(int job) {
 }
 API int spool_dequeue() {
     if (!SP || SPn == 0) return -1;                           // empty
+    if (SPpaused) return -2;                                  // paused and not empty
     int j = SP[SPf]; SP[SPf] = -1; SPf = (SPf + 1) % SPcap; SPn--; return j;
 }
 API int spool_size()  { return SPn; }
@@ -787,6 +788,23 @@ API int  sched_printer(int i)         { return (i >= 0 && i < SCHED_PRINTER.n) ?
 API int  sched_start(int i)           { return (i >= 0 && i < SCHED_START.n) ? SCHED_START.a[i] : -1; }
 API int  sched_end(int i)             { return (i >= 0 && i < SCHED_END.n) ? SCHED_END.a[i] : -1; }
 API int  sched_load(int p)            { return (p >= 0 && p < MAX_PRINTERS) ? SCHED_LOAD[p] : 0; }
-API int  spool_cancel(int job)        { (void)job; return 0; }
-API void spool_pause(int flag)        { (void)flag; }
-API int  spool_paused()               { return 0; }
+API int  spool_cancel(int job) {
+    if (!SP || SPn == 0) return 0;
+    for (int k = 0; k < SPn; k++) {
+        int idx = (SPf + k) % SPcap;
+        if (SP[idx] == job) {
+            for (int j = k; j < SPn - 1; j++) {
+                int cur = (SPf + j) % SPcap;
+                int nxt = (SPf + j + 1) % SPcap;
+                SP[cur] = SP[nxt];
+            }
+            SPr = (SPr - 1 + SPcap) % SPcap;
+            SP[SPr] = -1;
+            SPn--;
+            return 1;
+        }
+    }
+    return 0;
+}
+API void spool_pause(int flag)        { SPpaused = (flag != 0) ? 1 : 0; }
+API int  spool_paused()               { return SPpaused; }

@@ -10,7 +10,7 @@ function makeJsCore() {
   let TL_JOBS = [], TL_TIMES = [], TL_DEPTS = [];
   let RECEIVED = 0, ACTIVE = 0, ST = { ins: 0, ext: 0, cmp: 0, alg: 0 };
   let LOG = [], LOGIDX = [], EX = [], BENCH = [0, 0, 0, 0, 0];
-  let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0;
+  let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0, SPpaused = 0;
   let seed = 0;
 
   // Scheduler (A6)
@@ -363,7 +363,7 @@ function makeJsCore() {
     },
     spool_init(cap) {
       if (cap < 1) cap = 1;
-      SP = new Array(cap).fill(-1); SPcap = cap; SPf = SPr = SPn = 0;
+      SP = new Array(cap).fill(-1); SPcap = cap; SPf = SPr = SPn = 0; SPpaused = 0;
     },
     spool_enqueue(job) {
       if (!SP || SPn === SPcap) return 0;
@@ -371,6 +371,7 @@ function makeJsCore() {
     },
     spool_dequeue() {
       if (!SP || SPn === 0) return -1;
+      if (SPpaused) return -2;
       const j = SP[SPf]; SP[SPf] = -1; SPf = (SPf + 1) % SPcap; SPn--; return j;
     },
     spool_size() { return SPn; }, spool_front() { return SPf; }, spool_rear() { return SPr; },
@@ -583,9 +584,26 @@ function makeJsCore() {
     sched_start(i) { return (i >= 0 && i < SCHED_START.length) ? SCHED_START[i] : -1; },
     sched_end(i) { return (i >= 0 && i < SCHED_END.length) ? SCHED_END[i] : -1; },
     sched_load(p) { return (p >= 0 && p < MAX_PRINTERS) ? SCHED_LOAD[p] : 0; },
-    spool_cancel(job) { return 0; },
-    spool_pause(flag) {},
-    spool_paused() { return 0; },
+    spool_cancel(job) {
+      if (!SP || SPn === 0) return 0;
+      for (let k = 0; k < SPn; k++) {
+        const idx = (SPf + k) % SPcap;
+        if (SP[idx] === job) {
+          for (let j = k; j < SPn - 1; j++) {
+            const cur = (SPf + j) % SPcap;
+            const nxt = (SPf + j + 1) % SPcap;
+            SP[cur] = SP[nxt];
+          }
+          SPr = (SPr - 1 + SPcap) % SPcap;
+          SP[SPr] = -1;
+          SPn--;
+          return 1;
+        }
+      }
+      return 0;
+    },
+    spool_pause(flag) { SPpaused = flag !== 0 ? 1 : 0; },
+    spool_paused() { return SPpaused; },
   };
 }
 if (typeof module !== 'undefined') module.exports = { makeJsCore };

@@ -358,12 +358,31 @@ static void test_scheduler() {
     CHECK(sched_load(0) + sched_load(1) == 5 + 3 + 4 + 2, "sum of sched_load equals sum of durations");
 }
 
+static void test_spooler_pause_cancel() {
+    printf("[15] A7: Spooler pause and cancel\n");
+    spool_init(4);
+    spool_pause(1);
+    CHECK(spool_paused() == 1 && spool_dequeue() == -1, "empty paused spooler still returns -1");
+    CHECK(spool_enqueue(10) && spool_enqueue(20) && spool_enqueue(30), "enqueue while paused still works");
+    CHECK(spool_dequeue() == -2, "dequeue while paused and non-empty returns -2");
+    spool_pause(0);
+    CHECK(spool_paused() == 0 && spool_dequeue() == 10, "resume then dequeue works");
+
+    // Wrap-around state: front=1, [_, 20, 30, _] -> enqueue 40, 50 -> [50, 20, 30, 40], front=1, rear=1
+    CHECK(spool_enqueue(40) && spool_enqueue(50), "wrap-around fill to capacity");
+    CHECK(spool_cancel(999) == 0, "cancel missing job returns 0");
+    CHECK(spool_cancel(30) == 1 && spool_size() == 3, "cancel in middle after wrap-around");
+    CHECK(spool_cancel(20) == 1 && spool_size() == 2, "cancel at front");
+    CHECK(spool_cancel(50) == 1 && spool_size() == 1, "cancel at rear");
+    CHECK(spool_dequeue() == 40 && spool_size() == 0 && spool_dequeue() == -1, "remaining item dequeued in order");
+}
+
 int main(int argc, char** argv) {
     (void)argv;
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
     test_hash_table(); test_sort_queue(); test_undo_redo(); test_loser_and_naive_merge();
-    test_timeline_search(); test_scheduler();
+    test_timeline_search(); test_scheduler(); test_spooler_pause_cancel();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);
