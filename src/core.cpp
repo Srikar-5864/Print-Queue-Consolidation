@@ -301,3 +301,41 @@ API int bench(int k, int n) {
     return 1;
 }
 API int bench_stat(int i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; }
+
+// ------------------------------------------------------------ Day-1 stubs
+API int  job_exists(int job)          { (void)job; return 0; }
+API int  job_dept(int job)            { (void)job; return -1; }
+API int  job_time(int job)            { (void)job; return -1; }
+API int  set_duration(int job, int d) { (void)job; (void)d; return 1; }
+API int  get_duration(int job)        { (void)job; return -1; }
+API int  add_job_raw(int d, int time, int job) {
+    if (d < 0 || d >= MAX_DEPTS) return 2;
+    if (time < 0) return 3;
+    q_push(Q[d], job, time, d);
+    return 0;
+}
+API int  sort_queue(int d)            { return (d < 0 || d >= MAX_DEPTS) ? -1 : Q[d].count; }
+API int  is_sorted(int d)             { (void)d; return 1; }
+API int  undo()                       { return 0; }
+API int  redo()                       { return 0; }
+API int  undo_count()                 { return 0; }
+API int  redo_count()                 { return 0; }
+API int  op_field(int f)              { (void)f; return -1; }
+API int  merge_lt(int logOn)          { (void)logOn; return merge(0); }
+API int  merge_naive()                { return merge(0); }
+API int  tl_job(int i)                { (void)i; return -1; }
+API int  tl_time(int i)               { (void)i; return -1; }
+API int  tl_dept(int i)               { (void)i; return -1; }
+API int  tl_lower_bound(int t)        { (void)t; return 0; }
+API int  tl_upper_bound(int t)        { (void)t; return 0; }
+API int  find_in_timeline(int job)    { (void)job; return -1; }
+API int  sched_run(int printers)      { (void)printers; return -1; }
+API int  sched_count()                { return 0; }
+API int  sched_job(int i)             { (void)i; return -1; }
+API int  sched_printer(int i)         { (void)i; return -1; }
+API int  sched_start(int i)           { (void)i; return -1; }
+API int  sched_end(int i)             { (void)i; return -1; }
+API int  sched_load(int p)            { (void)p; return 0; }
+API int  spool_cancel(int job)        { (void)job; return 0; }
+API void spool_pause(int flag)        { (void)flag; }
+API int  spool_paused()               { return 0; }

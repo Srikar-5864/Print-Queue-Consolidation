@@ -191,6 +191,42 @@ function makeJsCore() {
       BENCH[1] = cmp; return 1;
     },
     bench_stat(i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; },
+    // Day-1 stubs
+    job_exists(job) { return 0; },
+    job_dept(job) { return -1; },
+    job_time(job) { return -1; },
+    set_duration(job, dur) { return 1; },
+    get_duration(job) { return -1; },
+    add_job_raw(d, time, job) {
+      if (d < 0 || d >= MAX) return 2;
+      if (time < 0) return 3;
+      qPush(Q[d], job, time, d); return 0;
+    },
+    sort_queue(d) { return (d < 0 || d >= MAX) ? -1 : Q[d].count; },
+    is_sorted(d) { return 1; },
+    undo() { return 0; },
+    redo() { return 0; },
+    undo_count() { return 0; },
+    redo_count() { return 0; },
+    op_field(f) { return -1; },
+    merge_lt(logOn) { return this.merge(0); },
+    merge_naive() { return this.merge(0); },
+    tl_job(i) { return -1; },
+    tl_time(i) { return -1; },
+    tl_dept(i) { return -1; },
+    tl_lower_bound(t) { return 0; },
+    tl_upper_bound(t) { return 0; },
+    find_in_timeline(job) { return -1; },
+    sched_run(printers) { return -1; },
+    sched_count() { return 0; },
+    sched_job(i) { return -1; },
+    sched_printer(i) { return -1; },
+    sched_start(i) { return -1; },
+    sched_end(i) { return -1; },
+    sched_load(p) { return 0; },
+    spool_cancel(job) { return 0; },
+    spool_pause(flag) {},
+    spool_paused() { return 0; },
   };
 }
 if (typeof module !== 'undefined') module.exports = { makeJsCore };
