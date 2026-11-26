@@ -7,6 +7,7 @@ function makeJsCore() {
   const Q = [], RANK = [];
   for (let i = 0; i < MAX; i++) { Q.push({ head: null, tail: null, count: 0 }); RANK.push(i); }
   let TL = { head: null, tail: null, n: 0 };
+  let TL_JOBS = [], TL_TIMES = [], TL_DEPTS = [];
   let RECEIVED = 0, ACTIVE = 0, ST = { ins: 0, ext: 0, cmp: 0, alg: 0 };
   let LOG = [], LOGIDX = [], EX = [], BENCH = [0, 0, 0, 0, 0];
   let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0;
@@ -134,11 +135,22 @@ function makeJsCore() {
     slow.next = null;
     return llMerge(llMergesort(head), llMergesort(right));
   }
-  const tlFree = () => { TL = { head: null, tail: null, n: 0 }; };
+  const tlFree = () => { TL = { head: null, tail: null, n: 0 }; TL_JOBS = []; TL_TIMES = []; TL_DEPTS = []; };
   const tlPush = (job, time, dept) => {
     const n = { job, time, dept, next: null };
     if (TL.tail) TL.tail.next = n; else TL.head = n;
     TL.tail = n; TL.n++;
+  };
+  const tlFinalize = () => {
+    htResetTl();
+    TL_JOBS = []; TL_TIMES = []; TL_DEPTS = [];
+    let idx = 0;
+    for (let p = TL.head; p; p = p.next) {
+      TL_JOBS.push(p.job); TL_TIMES.push(p.time); TL_DEPTS.push(p.dept);
+      const e = htFind(p.job);
+      if (e) e.tl_idx = idx;
+      idx++;
+    }
   };
 
   function newMerger(qs, rank, k, logOn, buildTL) {
@@ -302,6 +314,7 @@ function makeJsCore() {
       RECEIVED = ACTIVE = 0;
       for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
       mergeRun(m);
+      tlFinalize();
       ST = { ins: m.ins, ext: m.ext, cmp: m.cmp, alg: 0 };
       return TL.n;
     },
@@ -459,6 +472,7 @@ function makeJsCore() {
       RECEIVED = ACTIVE = 0;
       for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
       const st = mergeLtRun(Q, RANK, MAX, true);
+      tlFinalize();
       ST = { ins: st.ins, ext: st.ext, cmp: st.cmp, alg: 1 };
       return TL.n;
     },
@@ -488,15 +502,33 @@ function makeJsCore() {
         cur[best] = n.next;
         if (cur[best]) ins++;
       }
+      tlFinalize();
       ST = { ins, ext, cmp, alg: 2 };
       return TL.n;
     },
-    tl_job(i) { return -1; },
-    tl_time(i) { return -1; },
-    tl_dept(i) { return -1; },
-    tl_lower_bound(t) { return 0; },
-    tl_upper_bound(t) { return 0; },
-    find_in_timeline(job) { return -1; },
+    tl_job(i) { return (i >= 0 && i < TL_JOBS.length) ? TL_JOBS[i] : -1; },
+    tl_time(i) { return (i >= 0 && i < TL_TIMES.length) ? TL_TIMES[i] : -1; },
+    tl_dept(i) { return (i >= 0 && i < TL_DEPTS.length) ? TL_DEPTS[i] : -1; },
+    tl_lower_bound(t) {
+      let lo = 0, hi = TL_TIMES.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (TL_TIMES[mid] < t) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    },
+    tl_upper_bound(t) {
+      let lo = 0, hi = TL_TIMES.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (TL_TIMES[mid] <= t) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    },
+    find_in_timeline(job) {
+      const e = htFind(job);
+      return e ? e.tl_idx : -1;
+    },
     sched_run(printers) { return -1; },
     sched_count() { return 0; },
     sched_job(i) { return -1; },

@@ -239,6 +239,7 @@ static void record_op(int type, int dept, int job, int time, int dur, int prio, 
 static Queue Q[MAX_DEPTS];            // one linked queue per department slot
 static int   RANK[MAX_DEPTS];         // alphabetical rank of the department code
 static Node* TL_head; static Node* TL_tail; static int TL_n;   // merged timeline
+static IntArr TL_JOBS, TL_TIMES, TL_DEPTS;                     // flat timeline arrays (A5)
 static int   RECEIVED, ACTIVE, ST_ins, ST_ext, ST_cmp, ST_alg;
 static IntArr LOG, LOGIDX, EX;        // step log, log index, export buffer
 static int   BENCH[5];
@@ -247,11 +248,25 @@ static int*  SP; static int SPcap, SPf, SPr, SPn;              // circular queue
 static void tl_free() {
     while (TL_head) { Node* t = TL_head; TL_head = t->next; delete t; }
     TL_tail = nullptr; TL_n = 0;
+    TL_JOBS.clear(); TL_TIMES.clear(); TL_DEPTS.clear();
 }
 static void tl_push(int job, int time, int dept) {            // O(1) append
     Node* n = new Node{job, time, dept, nullptr};
     if (TL_tail) TL_tail->next = n; else TL_head = n;
     TL_tail = n; TL_n++;
+}
+static void tl_finalize() {
+    ht_reset_tl();
+    TL_JOBS.clear(); TL_TIMES.clear(); TL_DEPTS.clear();
+    int idx = 0;
+    for (Node* p = TL_head; p; p = p->next) {
+        TL_JOBS.push(p->job);
+        TL_TIMES.push(p->time);
+        TL_DEPTS.push(p->dept);
+        HNode* e = ht_find(p->job);
+        if (e) e->tl_idx = idx;
+        idx++;
+    }
 }
 
 // ------------------------------------------------------------- k-way merger
@@ -456,6 +471,7 @@ API int merge(int logOn) {
     RECEIVED = ACTIVE = 0;
     for (int d = 0; d < MAX_DEPTS; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
     merge_run(m);
+    tl_finalize();
     ST_ins = m.ins; ST_ext = m.ext; ST_cmp = m.cmp; ST_alg = 0;
     return TL_n;
 }
@@ -652,6 +668,7 @@ API int  merge_lt(int logOn) {
     RECEIVED = ACTIVE = 0;
     for (int d = 0; d < MAX_DEPTS; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
     merge_lt_run(Q, RANK, MAX_DEPTS, true, ST_ins, ST_ext, ST_cmp);
+    tl_finalize();
     ST_alg = 1;
     return TL_n;
 }
@@ -683,14 +700,34 @@ API int  merge_naive() {
         cur[best] = n->next;
         if (cur[best]) ST_ins++;
     }
+    tl_finalize();
     return TL_n;
 }
-API int  tl_job(int i)                { (void)i; return -1; }
-API int  tl_time(int i)               { (void)i; return -1; }
-API int  tl_dept(int i)               { (void)i; return -1; }
-API int  tl_lower_bound(int t)        { (void)t; return 0; }
-API int  tl_upper_bound(int t)        { (void)t; return 0; }
-API int  find_in_timeline(int job)    { (void)job; return -1; }
+API int  tl_job(int i)                { return (i >= 0 && i < TL_JOBS.n) ? TL_JOBS.a[i] : -1; }
+API int  tl_time(int i)               { return (i >= 0 && i < TL_TIMES.n) ? TL_TIMES.a[i] : -1; }
+API int  tl_dept(int i)               { return (i >= 0 && i < TL_DEPTS.n) ? TL_DEPTS.a[i] : -1; }
+API int  tl_lower_bound(int t) {
+    int lo = 0, hi = TL_TIMES.n;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (TL_TIMES.a[mid] < t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+API int  tl_upper_bound(int t) {
+    int lo = 0, hi = TL_TIMES.n;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (TL_TIMES.a[mid] <= t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+API int  find_in_timeline(int job) {
+    HNode* e = ht_find(job);
+    return e ? e->tl_idx : -1;
+}
 API int  sched_run(int printers)      { (void)printers; return -1; }
 API int  sched_count()                { return 0; }
 API int  sched_job(int i)             { (void)i; return -1; }

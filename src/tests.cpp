@@ -310,11 +310,38 @@ static void test_loser_and_naive_merge() {
     CHECK(bench_stat(4) > 0 && bench_stat(4) <= bench_stat(0), "loser tree comparisons <= heap on k=200, N=100000");
 }
 
+static void test_timeline_search() {
+    printf("[13] A5: Timeline search (O(1) read, binary search, find_in_timeline)\n");
+    init();
+    CHECK(tl_lower_bound(5) == 0 && tl_upper_bound(5) == 0 && tl_job(0) == -1 && find_in_timeline(1) == -1, "empty timeline bounds and lookups");
+
+    // Many equal times: [2, 5, 5, 5, 9]
+    add_job(0, 2, 10);
+    add_job(0, 5, 11);
+    add_job(1, 5, 12);
+    add_job(2, 5, 13);
+    add_job(0, 9, 14);
+    merge(0);
+    CHECK(tl_job(0) == 10 && tl_time(0) == 2 && tl_dept(0) == 0, "tl_job/time/dept O(1) reads");
+    CHECK(tl_job(5) == -1 && tl_time(-1) == -1 && tl_dept(99) == -1, "out-of-bounds tl_* return -1");
+    CHECK(tl_lower_bound(1) == 0 && tl_upper_bound(1) == 0, "time before first job");
+    CHECK(tl_lower_bound(5) == 1 && tl_upper_bound(5) == 4, "bounds with many equal times");
+    CHECK(tl_lower_bound(6) == 4 && tl_upper_bound(6) == 4, "time between existing values");
+    CHECK(tl_lower_bound(100) == 5 && tl_upper_bound(100) == 5, "time after last job equals tl_len()");
+    CHECK(find_in_timeline(12) == 2 && find_in_timeline(14) == 4 && find_in_timeline(999) == -1, "find_in_timeline returns exact index");
+
+    // Delete job 12 and re-merge
+    delete_job(1, 12);
+    merge_lt(0);
+    CHECK(find_in_timeline(12) == -1 && find_in_timeline(14) == 3, "find_in_timeline updated after deletion and new merge");
+}
+
 int main(int argc, char** argv) {
     (void)argv;
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
     test_hash_table(); test_sort_queue(); test_undo_redo(); test_loser_and_naive_merge();
+    test_timeline_search();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);
