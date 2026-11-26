@@ -73,22 +73,44 @@ function makeJsCore() {
     }
   }
 
+  // Undo / redo stacks (A3)
+  let UNDO_ST = [], REDO_ST = [];
+  let LAST_OP = null;
+  function recordOp(type, dept, job, time, dur, prio, pos) {
+    UNDO_ST.push({ type, dept, job, time, dur, prio, pos });
+    REDO_ST = [];
+  }
+
   const qPush = (q, job, time, dept) => {
     const n = { job, time, dept, next: null };
     if (q.tail) q.tail.next = n; else q.head = n;
     q.tail = n; q.count++;
   };
-  const qRemove = (q, job) => {
-    let prev = null, cur = q.head;
+  const qRemove = (q, job, out) => {
+    let prev = null, cur = q.head, idx = 0;
     while (cur) {
       if (cur.job === job) {
+        if (out) { out.pos = idx; out.time = cur.time; }
         if (prev) prev.next = cur.next; else q.head = cur.next;
         if (cur === q.tail) q.tail = prev;
         q.count--; return true;
       }
-      prev = cur; cur = cur.next;
+      prev = cur; cur = cur.next; idx++;
     }
     return false;
+  };
+  const qInsertAt = (q, pos, job, time, dept) => {
+    const n = { job, time, dept, next: null };
+    if (pos <= 0 || !q.head) {
+      n.next = q.head; q.head = n;
+      if (!q.tail) q.tail = n;
+      q.count++; return;
+    }
+    let prev = q.head;
+    for (let i = 0; i < pos - 1 && prev.next; i++) prev = prev.next;
+    n.next = prev.next; prev.next = n;
+    if (!n.next) q.tail = n;
+    q.count++;
   };
   const qClear = (q) => { q.head = q.tail = null; q.count = 0; };
 
@@ -179,6 +201,7 @@ function makeJsCore() {
     init() {
       for (let d = 0; d < MAX; d++) { qClear(Q[d]); RANK[d] = d; }
       htInit(128);
+      UNDO_ST = []; REDO_ST = []; LAST_OP = null;
       tlFree(); LOG = []; LOGIDX = []; EX = [];
       RECEIVED = ACTIVE = 0; ST = { ins: 0, ext: 0, cmp: 0 };
     },
@@ -188,16 +211,28 @@ function makeJsCore() {
       if (time < 0) return 3;
       if (htFind(job)) return 4;
       if (Q[d].tail && time < Q[d].tail.time) return 1;
-      qPush(Q[d], job, time, d); htInsert(job, d, time); return 0;
+      const pos = Q[d].count;
+      qPush(Q[d], job, time, d); htInsert(job, d, time);
+      recordOp(1, d, job, time, 1, 0, pos);
+      return 0;
     },
     delete_job(d, job) {
-      if (d >= 0 && d < MAX && qRemove(Q[d], job)) { htRemove(job); return 1; }
+      if (d < 0 || d >= MAX) return 0;
+      const e = htFind(job);
+      const dur = e ? e.dur : 1, prio = e ? e.prio : 0;
+      const out = { pos: 0, time: 0 };
+      if (qRemove(Q[d], job, out)) {
+        htRemove(job);
+        recordOp(2, d, job, out.time, dur, prio, out.pos);
+        return 1;
+      }
       return 0;
     },
     clear_queue(d) {
       if (d >= 0 && d < MAX) {
         for (let p = Q[d].head; p; p = p.next) htRemove(p.job);
         qClear(Q[d]);
+        UNDO_ST = []; REDO_ST = [];
       }
     },
     q_count(d) { return (d >= 0 && d < MAX) ? Q[d].count : 0; },
@@ -297,7 +332,10 @@ function makeJsCore() {
       if (d < 0 || d >= MAX) return 2;
       if (time < 0) return 3;
       if (htFind(job)) return 4;
-      qPush(Q[d], job, time, d); htInsert(job, d, time); return 0;
+      const pos = Q[d].count;
+      qPush(Q[d], job, time, d); htInsert(job, d, time);
+      recordOp(1, d, job, time, 1, 0, pos);
+      return 0;
     },
     sort_queue(d) {
       if (d < 0 || d >= MAX) return -1;
@@ -317,11 +355,52 @@ function makeJsCore() {
       }
       return 1;
     },
-    undo() { return 0; },
-    redo() { return 0; },
-    undo_count() { return 0; },
-    redo_count() { return 0; },
-    op_field(f) { return -1; },
+    undo() {
+      if (UNDO_ST.length === 0) return 0;
+      const op = UNDO_ST.pop();
+      if (op.type === 1) {
+        const e = htFind(op.job);
+        if (e) { op.dur = e.dur; op.prio = e.prio; }
+        const out = { pos: 0, time: 0 };
+        qRemove(Q[op.dept], op.job, out);
+        op.pos = out.pos;
+        htRemove(op.job);
+      } else {
+        qInsertAt(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        htInsert(op.job, op.dept, op.time, op.dur, op.prio);
+      }
+      REDO_ST.push(op);
+      LAST_OP = op;
+      return 1;
+    },
+    redo() {
+      if (REDO_ST.length === 0) return 0;
+      const op = REDO_ST.pop();
+      if (op.type === 1) {
+        qInsertAt(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        htInsert(op.job, op.dept, op.time, op.dur, op.prio);
+      } else {
+        const e = htFind(op.job);
+        if (e) { op.dur = e.dur; op.prio = e.prio; }
+        const out = { pos: 0, time: 0 };
+        qRemove(Q[op.dept], op.job, out);
+        op.pos = out.pos;
+        htRemove(op.job);
+      }
+      UNDO_ST.push(op);
+      LAST_OP = op;
+      return 1;
+    },
+    undo_count() { return UNDO_ST.length; },
+    redo_count() { return REDO_ST.length; },
+    op_field(f) {
+      if (!LAST_OP) return -1;
+      if (f === 0) return LAST_OP.type;
+      if (f === 1) return LAST_OP.dept;
+      if (f === 2) return LAST_OP.job;
+      if (f === 3) return LAST_OP.time;
+      return -1;
+    },
     merge_lt(logOn) { return this.merge(0); },
     merge_naive() { return this.merge(0); },
     tl_job(i) { return -1; },

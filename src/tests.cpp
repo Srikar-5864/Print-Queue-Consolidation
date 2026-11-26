@@ -214,11 +214,62 @@ static void test_sort_queue() {
     CHECK(sort_queue(0) == 100000 && is_sorted(0) == 1, "100,000 unsorted jobs sort cleanly");
 }
 
+static void test_undo_redo() {
+    printf("[11] A3: Undo and redo with two stacks\n");
+    init();
+    CHECK(undo() == 0 && redo() == 0 && undo_count() == 0 && redo_count() == 0, "undo/redo on empty return 0");
+    CHECK(op_field(0) == -1, "op_field is -1 before any undo/redo");
+
+    add_job(0, 10, 1); add_job(0, 20, 2); add_job(0, 30, 3);
+    set_duration(2, 5);
+    CHECK(undo_count() == 3 && redo_count() == 0, "3 adds recorded");
+    CHECK(delete_job(0, 2) == 1 && job_exists(2) == 0 && q_count(0) == 2, "middle delete removes job 2");
+    CHECK(undo() == 1 && op_field(0) == 2 && op_field(1) == 0 && op_field(2) == 2 && op_field(3) == 20, "undo of delete reports op_field");
+    export_queue(0);
+    CHECK(q_count(0) == 3 && exp_job(0) == 1 && exp_job(1) == 2 && exp_job(2) == 3, "undo of middle delete restores exact position");
+    CHECK(get_duration(2) == 5, "duration survives undo of a delete");
+    CHECK(redo() == 1 && q_count(0) == 2 && job_exists(2) == 0, "redo reapplies the delete");
+    CHECK(undo() == 1 && q_count(0) == 3, "undo again restores job 2");
+
+    // New add clears redo stack
+    redo();
+    CHECK(redo_count() == 0, "redo_count is 0 after redo");
+    undo();
+    CHECK(redo_count() == 1, "redo_count is 1 after undo");
+    add_job(0, 40, 4);
+    CHECK(redo_count() == 0, "new add clears redo stack");
+
+    // 1000 random operations undone fully returns to empty state
+    init();
+    seed_ = 98765u;
+    int next_id = 1;
+    int active_ids[1000]; int active_n = 0;
+    for (int i = 0; i < 1000; i++) {
+        if (active_n == 0 || (rnd() % 3u) != 0) {
+            int d = (int)(rnd() % 5u);
+            int t = Q[d].tail ? Q[d].tail->time + (int)(rnd() % 5u) : (int)(rnd() % 10u);
+            add_job(d, t, next_id);
+            active_ids[active_n++] = next_id++;
+        } else {
+            int pick = (int)(rnd() % (unsigned)active_n);
+            int jid = active_ids[pick];
+            int d = job_dept(jid);
+            delete_job(d, jid);
+            active_ids[pick] = active_ids[--active_n];
+        }
+    }
+    CHECK(undo_count() == 1000, "1000 operations recorded");
+    while (undo()) {}
+    int total_left = 0;
+    for (int d = 0; d < 5; d++) total_left += q_count(d);
+    CHECK(total_left == 0 && undo_count() == 0 && redo_count() == 1000, "undoing all 1000 ops returns to empty state");
+}
+
 int main(int argc, char** argv) {
     (void)argv;
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
-    test_hash_table(); test_sort_queue();
+    test_hash_table(); test_sort_queue(); test_undo_redo();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);

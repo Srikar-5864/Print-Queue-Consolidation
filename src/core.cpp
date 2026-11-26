@@ -54,17 +54,36 @@ static void q_push(Queue& q, int job, int time, int dept) {   // O(1) enqueue
     q.tail = n; q.count++;
 }
 
-static bool q_remove(Queue& q, int job) {                     // O(n) deletion
-    Node* prev = nullptr; Node* cur = q.head;
+static bool q_remove(Queue& q, int job, int* out_pos = nullptr, int* out_time = nullptr) { // O(n) deletion
+    Node* prev = nullptr; Node* cur = q.head; int idx = 0;
     while (cur) {
         if (cur->job == job) {
+            if (out_pos) *out_pos = idx;
+            if (out_time) *out_time = cur->time;
             if (prev) prev->next = cur->next; else q.head = cur->next;
             if (cur == q.tail) q.tail = prev;
             delete cur; q.count--; return true;
         }
-        prev = cur; cur = cur->next;
+        prev = cur; cur = cur->next; idx++;
     }
     return false;
+}
+
+static void q_insert_at(Queue& q, int pos, int job, int time, int dept) {
+    Node* n = new Node{job, time, dept, nullptr};
+    if (pos <= 0 || !q.head) {
+        n->next = q.head;
+        q.head = n;
+        if (!q.tail) q.tail = n;
+        q.count++;
+        return;
+    }
+    Node* prev = q.head;
+    for (int i = 0; i < pos - 1 && prev->next; i++) prev = prev->next;
+    n->next = prev->next;
+    prev->next = n;
+    if (!n->next) q.tail = n;
+    q.count++;
 }
 
 static void q_clear(Queue& q) {
@@ -191,6 +210,31 @@ static void ht_reset_tl() {
     }
 }
 
+// ---------------------------------------------------------------- undo / redo stacks (A3)
+struct Op { int type, dept, job, time, dur, prio, pos; }; // type: 1=add, 2=delete
+struct OpStack {
+    Op* a; int n; int cap;
+    void push(const Op& v) {
+        if (n == cap) {
+            int nc = cap ? cap * 2 : 64;
+            Op* b = new Op[nc];
+            for (int i = 0; i < n; i++) b[i] = a[i];
+            delete[] a; a = b; cap = nc;
+        }
+        a[n++] = v;
+    }
+    Op pop() { return a[--n]; }
+    void clear() { n = 0; }
+};
+static OpStack UNDO_ST, REDO_ST;
+static Op LAST_OP = {0, -1, -1, -1, 1, 0, 0};
+static bool HAS_LAST_OP = false;
+
+static void record_op(int type, int dept, int job, int time, int dur, int prio, int pos) {
+    UNDO_ST.push(Op{type, dept, job, time, dur, prio, pos});
+    REDO_ST.clear();
+}
+
 // ---------------------------------------------------------------- global state
 static Queue Q[MAX_DEPTS];            // one linked queue per department slot
 static int   RANK[MAX_DEPTS];         // alphabetical rank of the department code
@@ -285,6 +329,7 @@ static void merge_run(Merger& m) {
 API void init() {
     for (int d = 0; d < MAX_DEPTS; d++) { q_clear(Q[d]); RANK[d] = d; }
     ht_init(128);
+    UNDO_ST.clear(); REDO_ST.clear(); HAS_LAST_OP = false;
     tl_free(); LOG.clear(); LOGIDX.clear(); EX.clear();
     RECEIVED = ACTIVE = ST_ins = ST_ext = ST_cmp = 0;
 }
@@ -296,13 +341,21 @@ API int add_job(int d, int time, int job) {
     if (time < 0) return 3;
     if (ht_find(job)) return 4;
     if (Q[d].tail && time < Q[d].tail->time) return 1;
+    int pos = Q[d].count;
     q_push(Q[d], job, time, d);
     ht_insert(job, d, time);
+    record_op(1, d, job, time, 1, 0, pos);
     return 0;
 }
 API int  delete_job(int d, int job) {
-    if (d >= 0 && d < MAX_DEPTS && q_remove(Q[d], job)) {
+    if (d < 0 || d >= MAX_DEPTS) return 0;
+    HNode* e = ht_find(job);
+    int dur = e ? e->dur : 1;
+    int prio = e ? e->prio : 0;
+    int pos = 0, time = 0;
+    if (q_remove(Q[d], job, &pos, &time)) {
         ht_remove(job);
+        record_op(2, d, job, time, dur, prio, pos);
         return 1;
     }
     return 0;
@@ -311,6 +364,7 @@ API void clear_queue(int d) {
     if (d >= 0 && d < MAX_DEPTS) {
         for (Node* p = Q[d].head; p; p = p->next) ht_remove(p->job);
         q_clear(Q[d]);
+        UNDO_ST.clear(); REDO_ST.clear();
     }
 }
 API int  q_count(int d)             { return (d >= 0 && d < MAX_DEPTS) ? Q[d].count : 0; }
@@ -450,8 +504,10 @@ API int  add_job_raw(int d, int time, int job) {
     if (d < 0 || d >= MAX_DEPTS) return 2;
     if (time < 0) return 3;
     if (ht_find(job)) return 4;
+    int pos = Q[d].count;
     q_push(Q[d], job, time, d);
     ht_insert(job, d, time);
+    record_op(1, d, job, time, 1, 0, pos);
     return 0;
 }
 API int  sort_queue(int d) {
@@ -474,11 +530,54 @@ API int  is_sorted(int d) {
     }
     return 1;
 }
-API int  undo()                       { return 0; }
-API int  redo()                       { return 0; }
-API int  undo_count()                 { return 0; }
-API int  redo_count()                 { return 0; }
-API int  op_field(int f)              { (void)f; return -1; }
+API int  undo() {
+    if (UNDO_ST.n == 0) return 0;
+    Op op = UNDO_ST.pop();
+    if (op.type == 1) {
+        HNode* e = ht_find(op.job);
+        if (e) { op.dur = e->dur; op.prio = e->prio; }
+        int pos = 0;
+        q_remove(Q[op.dept], op.job, &pos, nullptr);
+        op.pos = pos;
+        ht_remove(op.job);
+    } else {
+        q_insert_at(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        ht_insert(op.job, op.dept, op.time, op.dur, op.prio);
+    }
+    REDO_ST.push(op);
+    LAST_OP = op; HAS_LAST_OP = true;
+    return 1;
+}
+API int  redo() {
+    if (REDO_ST.n == 0) return 0;
+    Op op = REDO_ST.pop();
+    if (op.type == 1) {
+        q_insert_at(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        ht_insert(op.job, op.dept, op.time, op.dur, op.prio);
+    } else {
+        HNode* e = ht_find(op.job);
+        if (e) { op.dur = e->dur; op.prio = e->prio; }
+        int pos = 0;
+        q_remove(Q[op.dept], op.job, &pos, nullptr);
+        op.pos = pos;
+        ht_remove(op.job);
+    }
+    UNDO_ST.push(op);
+    LAST_OP = op; HAS_LAST_OP = true;
+    return 1;
+}
+API int  undo_count()                 { return UNDO_ST.n; }
+API int  redo_count()                 { return REDO_ST.n; }
+API int  op_field(int f) {
+    if (!HAS_LAST_OP) return -1;
+    switch (f) {
+        case 0: return LAST_OP.type;
+        case 1: return LAST_OP.dept;
+        case 2: return LAST_OP.job;
+        case 3: return LAST_OP.time;
+    }
+    return -1;
+}
 API int  merge_lt(int logOn)          { (void)logOn; return merge(0); }
 API int  merge_naive()                { return merge(0); }
 API int  tl_job(int i)                { (void)i; return -1; }
