@@ -175,11 +175,50 @@ static void test_hash_table() {
     CHECK(col_ok, "many IDs with colliding patterns still work");
 }
 
+static void test_sort_queue() {
+    printf("[10] A2: Stable merge sort on a linked queue\n");
+    init();
+    CHECK(sort_queue(-1) == -1 && sort_queue(MAX_DEPTS) == -1, "bad department returns -1");
+    CHECK(is_sorted(0) == 1 && sort_queue(0) == 0, "empty queue is sorted and returns 0");
+    add_job_raw(0, 42, 10);
+    CHECK(is_sorted(0) == 1 && sort_queue(0) == 1 && is_sorted(0) == 1, "one-job queue stays sorted");
+
+    // Unsorted with equal times to verify stability
+    init();
+    add_job_raw(0, 10, 101);
+    add_job_raw(0, 5, 102);
+    add_job_raw(0, 10, 103);
+    add_job_raw(0, 2, 104);
+    add_job_raw(0, 5, 105);
+    add_job_raw(0, 10, 106);
+    set_duration(103, 9);
+    CHECK(is_sorted(0) == 0, "unsorted queue reports is_sorted == 0");
+    CHECK(sort_queue(0) == 6 && is_sorted(0) == 1, "sort_queue returns 6 and is_sorted becomes 1");
+    export_queue(0);
+    int expect_ids[] = {104, 102, 105, 101, 103, 106};
+    int ok = 1;
+    for (int i = 0; i < 6; i++) if (exp_job(i) != expect_ids[i]) ok = 0;
+    CHECK(ok, "equal times keep their original relative order (stable)");
+    CHECK(job_exists(103) == 1 && get_duration(103) == 9 && job_time(103) == 10, "hash table untouched by sorting");
+    CHECK(add_job(0, 10, 107) == 0 && add_job(0, 9, 108) == 1, "tail pointer updated after sort");
+
+    // Already sorted stays unchanged
+    CHECK(sort_queue(0) == 7 && is_sorted(0) == 1, "already sorted input stays sorted");
+
+    // 100,000 jobs unsorted
+    init();
+    seed_ = 4242u;
+    for (int j = 0; j < 100000; j++) {
+        add_job_raw(0, (int)(rnd() % 10000u), j);
+    }
+    CHECK(sort_queue(0) == 100000 && is_sorted(0) == 1, "100,000 unsorted jobs sort cleanly");
+}
+
 int main(int argc, char** argv) {
     (void)argv;
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
-    test_hash_table();
+    test_hash_table(); test_sort_queue();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);

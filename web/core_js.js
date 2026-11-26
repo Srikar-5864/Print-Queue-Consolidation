@@ -91,6 +91,27 @@ function makeJsCore() {
     return false;
   };
   const qClear = (q) => { q.head = q.tail = null; q.count = 0; };
+
+  // Linked list merge sort (A2)
+  function llMerge(a, b) {
+    const dummy = { job: 0, time: 0, dept: 0, next: null };
+    let tail = dummy;
+    while (a && b) {
+      if (a.time <= b.time) { tail.next = a; a = a.next; }
+      else { tail.next = b; b = b.next; }
+      tail = tail.next;
+    }
+    tail.next = a ? a : b;
+    return dummy.next;
+  }
+  function llMergesort(head) {
+    if (!head || !head.next) return head;
+    let slow = head, fast = head.next;
+    while (fast && fast.next) { slow = slow.next; fast = fast.next.next; }
+    const right = slow.next;
+    slow.next = null;
+    return llMerge(llMergesort(head), llMergesort(right));
+  }
   const tlFree = () => { TL = { head: null, tail: null, n: 0 }; };
   const tlPush = (job, time, dept) => {
     const n = { job, time, dept, next: null };
@@ -278,8 +299,24 @@ function makeJsCore() {
       if (htFind(job)) return 4;
       qPush(Q[d], job, time, d); htInsert(job, d, time); return 0;
     },
-    sort_queue(d) { return (d < 0 || d >= MAX) ? -1 : Q[d].count; },
-    is_sorted(d) { return 1; },
+    sort_queue(d) {
+      if (d < 0 || d >= MAX) return -1;
+      if (Q[d].head && Q[d].head.next) {
+        Q[d].head = llMergesort(Q[d].head);
+        let p = Q[d].head, cnt = 0, last = null;
+        while (p) { last = p; cnt++; p = p.next; }
+        Q[d].tail = last;
+        Q[d].count = cnt;
+      }
+      return Q[d].count;
+    },
+    is_sorted(d) {
+      if (d < 0 || d >= MAX) return 0;
+      for (let p = Q[d].head; p && p.next; p = p.next) {
+        if (p.time > p.next.time) return 0;
+      }
+      return 1;
+    },
     undo() { return 0; },
     redo() { return 0; },
     undo_count() { return 0; },

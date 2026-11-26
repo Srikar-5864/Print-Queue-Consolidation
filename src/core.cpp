@@ -72,6 +72,32 @@ static void q_clear(Queue& q) {
     q.tail = nullptr; q.count = 0;
 }
 
+// ------------------------------------------------------------ linked list merge sort (A2)
+static Node* ll_merge(Node* a, Node* b) {
+    Node dummy{0, 0, 0, nullptr};
+    Node* tail = &dummy;
+    while (a && b) {
+        if (a->time <= b->time) { tail->next = a; a = a->next; }
+        else                    { tail->next = b; b = b->next; }
+        tail = tail->next;
+    }
+    tail->next = a ? a : b;
+    return dummy.next;
+}
+
+static Node* ll_mergesort(Node* head) {
+    if (!head || !head->next) return head;
+    Node* slow = head;
+    Node* fast = head->next;
+    while (fast && fast->next) {
+        slow = slow->next;
+        fast = fast->next->next;
+    }
+    Node* right = slow->next;
+    slow->next = nullptr;
+    return ll_merge(ll_mergesort(head), ll_mergesort(right));
+}
+
 // ---------------------------------------------------------------- hash table (A1)
 struct HNode {
     int job, dept, time, dur, tl_idx, prio;
@@ -428,8 +454,26 @@ API int  add_job_raw(int d, int time, int job) {
     ht_insert(job, d, time);
     return 0;
 }
-API int  sort_queue(int d)            { return (d < 0 || d >= MAX_DEPTS) ? -1 : Q[d].count; }
-API int  is_sorted(int d)             { (void)d; return 1; }
+API int  sort_queue(int d) {
+    if (d < 0 || d >= MAX_DEPTS) return -1;
+    if (Q[d].head && Q[d].head->next) {
+        Q[d].head = ll_mergesort(Q[d].head);
+        Node* p = Q[d].head;
+        int cnt = 0;
+        Node* last = nullptr;
+        while (p) { last = p; cnt++; p = p->next; }
+        Q[d].tail = last;
+        Q[d].count = cnt;
+    }
+    return Q[d].count;
+}
+API int  is_sorted(int d) {
+    if (d < 0 || d >= MAX_DEPTS) return 0;
+    for (Node* p = Q[d].head; p && p->next; p = p->next) {
+        if (p->time > p->next->time) return 0;
+    }
+    return 1;
+}
 API int  undo()                       { return 0; }
 API int  redo()                       { return 0; }
 API int  undo_count()                 { return 0; }
