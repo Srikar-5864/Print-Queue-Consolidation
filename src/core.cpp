@@ -245,6 +245,33 @@ static IntArr LOG, LOGIDX, EX;        // step log, log index, export buffer
 static int   BENCH[5];
 static int*  SP; static int SPcap, SPf, SPr, SPn;              // circular queue
 
+// ---------------------------------------------------------------- scheduler (A6)
+#define MAX_PRINTERS 10
+struct PrinterSlot { int free_at, idx; };
+static IntArr SCHED_JOB, SCHED_PRINTER, SCHED_START, SCHED_END;
+static int SCHED_LOAD[MAX_PRINTERS];
+
+static void sched_clear() {
+    SCHED_JOB.clear(); SCHED_PRINTER.clear(); SCHED_START.clear(); SCHED_END.clear();
+    for (int i = 0; i < MAX_PRINTERS; i++) SCHED_LOAD[i] = 0;
+}
+
+static bool hp_before(const PrinterSlot& a, const PrinterSlot& b) {
+    return (a.free_at != b.free_at) ? (a.free_at < b.free_at) : (a.idx < b.idx);
+}
+
+static void hp_sift_down(PrinterSlot* hp, int n, int i) {
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1;
+        if (l >= n) return;
+        int c = l;
+        if (r < n && hp_before(hp[r], hp[l])) c = r;
+        if (!hp_before(hp[c], hp[i])) return;
+        PrinterSlot t = hp[c]; hp[c] = hp[i]; hp[i] = t;
+        i = c;
+    }
+}
+
 static void tl_free() {
     while (TL_head) { Node* t = TL_head; TL_head = t->next; delete t; }
     TL_tail = nullptr; TL_n = 0;
@@ -409,7 +436,7 @@ API void init() {
     for (int d = 0; d < MAX_DEPTS; d++) { q_clear(Q[d]); RANK[d] = d; }
     ht_init(128);
     UNDO_ST.clear(); REDO_ST.clear(); HAS_LAST_OP = false;
-    tl_free(); LOG.clear(); LOGIDX.clear(); EX.clear();
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear(); EX.clear();
     RECEIVED = ACTIVE = ST_ins = ST_ext = ST_cmp = ST_alg = 0;
 }
 API void set_rank(int d, int r) { if (d >= 0 && d < MAX_DEPTS) RANK[d] = r; }
@@ -465,7 +492,7 @@ API int exp_time(int i) { return (i >= 0 && 3 * i < EX.n) ? EX.a[3 * i + 1] : -1
 API int exp_dept(int i) { return (i >= 0 && 3 * i < EX.n) ? EX.a[3 * i + 2] : -1; }
 
 API int merge(int logOn) {
-    tl_free(); LOG.clear(); LOGIDX.clear();
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear();
     Merger m;
     m.qs = Q; m.rank = RANK; m.k = MAX_DEPTS; m.logOn = (logOn != 0); m.buildTL = true;
     RECEIVED = ACTIVE = 0;
@@ -664,7 +691,7 @@ API int  op_field(int f) {
 }
 API int  merge_lt(int logOn) {
     (void)logOn;
-    tl_free(); LOG.clear(); LOGIDX.clear();
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear();
     RECEIVED = ACTIVE = 0;
     for (int d = 0; d < MAX_DEPTS; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
     merge_lt_run(Q, RANK, MAX_DEPTS, true, ST_ins, ST_ext, ST_cmp);
@@ -673,7 +700,7 @@ API int  merge_lt(int logOn) {
     return TL_n;
 }
 API int  merge_naive() {
-    tl_free(); LOG.clear(); LOGIDX.clear();
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear();
     RECEIVED = ACTIVE = 0;
     Node* cur[MAX_DEPTS];
     for (int d = 0; d < MAX_DEPTS; d++) {
@@ -728,13 +755,38 @@ API int  find_in_timeline(int job) {
     HNode* e = ht_find(job);
     return e ? e->tl_idx : -1;
 }
-API int  sched_run(int printers)      { (void)printers; return -1; }
-API int  sched_count()                { return 0; }
-API int  sched_job(int i)             { (void)i; return -1; }
-API int  sched_printer(int i)         { (void)i; return -1; }
-API int  sched_start(int i)           { (void)i; return -1; }
-API int  sched_end(int i)             { (void)i; return -1; }
-API int  sched_load(int p)            { (void)p; return 0; }
+API int  sched_run(int printers) {
+    if (printers < 1 || printers > MAX_PRINTERS) return -1;
+    sched_clear();
+    if (TL_n == 0) return 0;
+    PrinterSlot hp[MAX_PRINTERS];
+    for (int p = 0; p < printers; p++) hp[p] = PrinterSlot{0, p};
+    int makespan = 0;
+    for (int i = 0; i < TL_n; i++) {
+        int job = TL_JOBS.a[i];
+        int jtime = TL_TIMES.a[i];
+        HNode* e = ht_find(job);
+        int dur = e ? e->dur : 1;
+        int p = hp[0].idx;
+        int start = (hp[0].free_at > jtime) ? hp[0].free_at : jtime;
+        int end = start + dur;
+        SCHED_JOB.push(job);
+        SCHED_PRINTER.push(p);
+        SCHED_START.push(start);
+        SCHED_END.push(end);
+        SCHED_LOAD[p] += dur;
+        if (end > makespan) makespan = end;
+        hp[0].free_at = end;
+        hp_sift_down(hp, printers, 0);
+    }
+    return makespan;
+}
+API int  sched_count()                { return SCHED_JOB.n; }
+API int  sched_job(int i)             { return (i >= 0 && i < SCHED_JOB.n) ? SCHED_JOB.a[i] : -1; }
+API int  sched_printer(int i)         { return (i >= 0 && i < SCHED_PRINTER.n) ? SCHED_PRINTER.a[i] : -1; }
+API int  sched_start(int i)           { return (i >= 0 && i < SCHED_START.n) ? SCHED_START.a[i] : -1; }
+API int  sched_end(int i)             { return (i >= 0 && i < SCHED_END.n) ? SCHED_END.a[i] : -1; }
+API int  sched_load(int p)            { return (p >= 0 && p < MAX_PRINTERS) ? SCHED_LOAD[p] : 0; }
 API int  spool_cancel(int job)        { (void)job; return 0; }
 API void spool_pause(int flag)        { (void)flag; }
 API int  spool_paused()               { return 0; }

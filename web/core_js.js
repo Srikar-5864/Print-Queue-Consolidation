@@ -13,6 +13,29 @@ function makeJsCore() {
   let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0;
   let seed = 0;
 
+  // Scheduler (A6)
+  const MAX_PRINTERS = 10;
+  let SCHED_JOB = [], SCHED_PRINTER = [], SCHED_START = [], SCHED_END = [];
+  let SCHED_LOAD = new Array(MAX_PRINTERS).fill(0);
+  function schedClear() {
+    SCHED_JOB = []; SCHED_PRINTER = []; SCHED_START = []; SCHED_END = [];
+    for (let i = 0; i < MAX_PRINTERS; i++) SCHED_LOAD[i] = 0;
+  }
+  function hpBefore(a, b) {
+    return a.free_at !== b.free_at ? a.free_at < b.free_at : a.idx < b.idx;
+  }
+  function hpSiftDown(hp, n, i) {
+    for (;;) {
+      const l = 2 * i + 1, r = l + 1;
+      if (l >= n) return;
+      let c = l;
+      if (r < n && hpBefore(hp[r], hp[l])) c = r;
+      if (!hpBefore(hp[c], hp[i])) return;
+      const t = hp[c]; hp[c] = hp[i]; hp[i] = t;
+      i = c;
+    }
+  }
+
   // Hash table (A1)
   let HT_cap = 128, HT_n = 0;
   let HT_buckets = new Array(HT_cap).fill(null);
@@ -264,7 +287,7 @@ function makeJsCore() {
       for (let d = 0; d < MAX; d++) { qClear(Q[d]); RANK[d] = d; }
       htInit(128);
       UNDO_ST = []; REDO_ST = []; LAST_OP = null;
-      tlFree(); LOG = []; LOGIDX = []; EX = [];
+      tlFree(); schedClear(); LOG = []; LOGIDX = []; EX = [];
       RECEIVED = ACTIVE = 0; ST = { ins: 0, ext: 0, cmp: 0, alg: 0 };
     },
     set_rank(d, r) { if (d >= 0 && d < MAX) RANK[d] = r; },
@@ -309,7 +332,7 @@ function makeJsCore() {
     exp_time(i) { return (i >= 0 && 3 * i < EX.length) ? EX[3 * i + 1] : -1; },
     exp_dept(i) { return (i >= 0 && 3 * i < EX.length) ? EX[3 * i + 2] : -1; },
     merge(logOn) {
-      tlFree(); LOG = []; LOGIDX = [];
+      tlFree(); schedClear(); LOG = []; LOGIDX = [];
       const m = newMerger(Q, RANK, MAX, logOn !== 0, true);
       RECEIVED = ACTIVE = 0;
       for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
@@ -468,7 +491,7 @@ function makeJsCore() {
       return -1;
     },
     merge_lt(logOn) {
-      tlFree(); LOG = []; LOGIDX = [];
+      tlFree(); schedClear(); LOG = []; LOGIDX = [];
       RECEIVED = ACTIVE = 0;
       for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
       const st = mergeLtRun(Q, RANK, MAX, true);
@@ -477,7 +500,7 @@ function makeJsCore() {
       return TL.n;
     },
     merge_naive() {
-      tlFree(); LOG = []; LOGIDX = [];
+      tlFree(); schedClear(); LOG = []; LOGIDX = [];
       RECEIVED = ACTIVE = 0;
       const cur = new Array(MAX);
       for (let d = 0; d < MAX; d++) {
@@ -529,13 +552,37 @@ function makeJsCore() {
       const e = htFind(job);
       return e ? e.tl_idx : -1;
     },
-    sched_run(printers) { return -1; },
-    sched_count() { return 0; },
-    sched_job(i) { return -1; },
-    sched_printer(i) { return -1; },
-    sched_start(i) { return -1; },
-    sched_end(i) { return -1; },
-    sched_load(p) { return 0; },
+    sched_run(printers) {
+      if (printers < 1 || printers > MAX_PRINTERS) return -1;
+      schedClear();
+      if (TL_JOBS.length === 0) return 0;
+      const hp = [];
+      for (let p = 0; p < printers; p++) hp.push({ free_at: 0, idx: p });
+      let makespan = 0;
+      for (let i = 0; i < TL_JOBS.length; i++) {
+        const job = TL_JOBS[i], jtime = TL_TIMES[i];
+        const e = htFind(job);
+        const dur = e ? e.dur : 1;
+        const p = hp[0].idx;
+        const start = hp[0].free_at > jtime ? hp[0].free_at : jtime;
+        const end = start + dur;
+        SCHED_JOB.push(job);
+        SCHED_PRINTER.push(p);
+        SCHED_START.push(start);
+        SCHED_END.push(end);
+        SCHED_LOAD[p] += dur;
+        if (end > makespan) makespan = end;
+        hp[0].free_at = end;
+        hpSiftDown(hp, printers, 0);
+      }
+      return makespan;
+    },
+    sched_count() { return SCHED_JOB.length; },
+    sched_job(i) { return (i >= 0 && i < SCHED_JOB.length) ? SCHED_JOB[i] : -1; },
+    sched_printer(i) { return (i >= 0 && i < SCHED_PRINTER.length) ? SCHED_PRINTER[i] : -1; },
+    sched_start(i) { return (i >= 0 && i < SCHED_START.length) ? SCHED_START[i] : -1; },
+    sched_end(i) { return (i >= 0 && i < SCHED_END.length) ? SCHED_END[i] : -1; },
+    sched_load(p) { return (p >= 0 && p < MAX_PRINTERS) ? SCHED_LOAD[p] : 0; },
     spool_cancel(job) { return 0; },
     spool_pause(flag) {},
     spool_paused() { return 0; },

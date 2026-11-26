@@ -336,12 +336,34 @@ static void test_timeline_search() {
     CHECK(find_in_timeline(12) == -1 && find_in_timeline(14) == 3, "find_in_timeline updated after deletion and new merge");
 }
 
+static void test_scheduler() {
+    printf("[14] A6: Multi-printer scheduler\n");
+    init();
+    add_job(0, 0, 1); set_duration(1, 5);
+    add_job(0, 1, 2); set_duration(2, 3);
+    add_job(0, 2, 3); set_duration(3, 4);
+    add_job(0, 20, 4); set_duration(4, 2);
+    merge(0);
+    CHECK(sched_run(0) == -1 && sched_run(11) == -1, "bad printer counts return -1");
+
+    // 1 printer: runs in sequence, idle gap before job 4 (arrives at 20)
+    CHECK(sched_run(1) == 22 && sched_count() == 4, "1 printer makespan 22 with idle gap");
+    CHECK(sched_start(0) == 0 && sched_end(0) == 5 && sched_start(1) == 5 && sched_end(1) == 8, "sequential execution");
+    CHECK(sched_start(3) == 20 && sched_end(3) == 22 && sched_load(0) == 14, "idle gap at 20, total load 14");
+
+    // 2 printers: tie goes to lower printer index (0), then printer 1, etc.
+    CHECK(sched_run(2) == 22 && sched_count() == 4, "2 printers makespan 22");
+    CHECK(sched_printer(0) == 0 && sched_printer(1) == 1 && sched_printer(2) == 1, "printer 0 gets job 1 (0..5), printer 1 gets job 2 (1..4) and job 3 (4..8)");
+    CHECK(sched_printer(3) == 0, "at time 20 both free, lower index printer 0 wins tie");
+    CHECK(sched_load(0) + sched_load(1) == 5 + 3 + 4 + 2, "sum of sched_load equals sum of durations");
+}
+
 int main(int argc, char** argv) {
     (void)argv;
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
     test_hash_table(); test_sort_queue(); test_undo_redo(); test_loser_and_naive_merge();
-    test_timeline_search();
+    test_timeline_search(); test_scheduler();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);
