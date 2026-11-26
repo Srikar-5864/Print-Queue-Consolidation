@@ -239,9 +239,9 @@ static void record_op(int type, int dept, int job, int time, int dur, int prio, 
 static Queue Q[MAX_DEPTS];            // one linked queue per department slot
 static int   RANK[MAX_DEPTS];         // alphabetical rank of the department code
 static Node* TL_head; static Node* TL_tail; static int TL_n;   // merged timeline
-static int   RECEIVED, ACTIVE, ST_ins, ST_ext, ST_cmp;
+static int   RECEIVED, ACTIVE, ST_ins, ST_ext, ST_cmp, ST_alg;
 static IntArr LOG, LOGIDX, EX;        // step log, log index, export buffer
-static int   BENCH[4];
+static int   BENCH[5];
 static int*  SP; static int SPcap, SPf, SPr, SPn;              // circular queue
 
 static void tl_free() {
@@ -325,13 +325,77 @@ static void merge_run(Merger& m) {
     ev(m, EV_DONE, 0, 0, 0, 0);
 }
 
+// ------------------------------------------------------------- loser tree merge (A4)
+static bool lt_before(Node* const* cur, const int* ranks, int a, int b, int& cmp) {
+    if (!cur[a]) return false;
+    if (!cur[b]) return true;
+    cmp++;
+    if (cur[a]->time != cur[b]->time) return cur[a]->time < cur[b]->time;
+    return ranks[a] < ranks[b];
+}
+
+static void merge_lt_run(Queue* qs, const int* rank, int k, bool buildTL,
+                         int& out_ins, int& out_ext, int& out_cmp) {
+    Node* cur[MAX_DEPTS];
+    int ranks[MAX_DEPTS];
+    int orig_d[MAX_DEPTS];
+    int m = 0;
+    out_ins = out_ext = out_cmp = 0;
+    for (int d = 0; d < k; d++) {
+        if (qs[d].head) {
+            cur[m] = qs[d].head;
+            ranks[m] = rank[d];
+            orig_d[m] = d;
+            out_ins++;
+            m++;
+        }
+    }
+    if (m == 0) return;
+    if (m == 1) {
+        for (Node* p = cur[0]; p; p = p->next) {
+            if (buildTL) tl_push(p->job, p->time, orig_d[0]);
+            out_ext++;
+        }
+        return;
+    }
+    int ls[MAX_DEPTS];
+    int win[2 * MAX_DEPTS];
+    for (int i = 0; i < m; i++) win[m + i] = i;
+    for (int i = m - 1; i >= 1; i--) {
+        int a = win[2 * i], b = win[2 * i + 1];
+        if (lt_before(cur, ranks, a, b, out_cmp)) {
+            win[i] = a; ls[i] = b;
+        } else {
+            win[i] = b; ls[i] = a;
+        }
+    }
+    ls[0] = win[1];
+
+    while (cur[ls[0]]) {
+        int s = ls[0];
+        Node* n = cur[s];
+        if (buildTL) tl_push(n->job, n->time, orig_d[s]);
+        out_ext++;
+        cur[s] = n->next;
+        if (cur[s]) out_ins++;
+        int t = (m + s) >> 1;
+        while (t > 0) {
+            if (lt_before(cur, ranks, ls[t], s, out_cmp)) {
+                int tmp = s; s = ls[t]; ls[t] = tmp;
+            }
+            t >>= 1;
+        }
+        ls[0] = s;
+    }
+}
+
 // =============================================================== exported API
 API void init() {
     for (int d = 0; d < MAX_DEPTS; d++) { q_clear(Q[d]); RANK[d] = d; }
     ht_init(128);
     UNDO_ST.clear(); REDO_ST.clear(); HAS_LAST_OP = false;
     tl_free(); LOG.clear(); LOGIDX.clear(); EX.clear();
-    RECEIVED = ACTIVE = ST_ins = ST_ext = ST_cmp = 0;
+    RECEIVED = ACTIVE = ST_ins = ST_ext = ST_cmp = ST_alg = 0;
 }
 API void set_rank(int d, int r) { if (d >= 0 && d < MAX_DEPTS) RANK[d] = r; }
 
@@ -392,15 +456,16 @@ API int merge(int logOn) {
     RECEIVED = ACTIVE = 0;
     for (int d = 0; d < MAX_DEPTS; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
     merge_run(m);
-    ST_ins = m.ins; ST_ext = m.ext; ST_cmp = m.cmp;
+    ST_ins = m.ins; ST_ext = m.ext; ST_cmp = m.cmp; ST_alg = 0;
     return TL_n;
 }
 API int tl_len() { return TL_n; }
-// 0 received, 1 produced, 2 heap insertions, 3 heap extractions, 4 comparisons, 5 active departments
+// 0 received, 1 produced, 2 insertions, 3 extractions, 4 comparisons, 5 active departments, 6 algorithm
 API int stat(int i) {
     switch (i) {
         case 0: return RECEIVED; case 1: return TL_n; case 2: return ST_ins;
         case 3: return ST_ext;   case 4: return ST_cmp; case 5: return ACTIVE;
+        case 6: return ST_alg;
     }
     return 0;
 }
@@ -483,11 +548,14 @@ API int bench(int k, int n) {
         cur[best] = cur[best]->next;
     }
     BENCH[1] = cmp;
+    int lt_ins = 0, lt_ext = 0, lt_cmp = 0;
+    merge_lt_run(qs, ranks, k, false, lt_ins, lt_ext, lt_cmp);
+    BENCH[4] = lt_cmp;
     for (int d = 0; d < k; d++) q_clear(qs[d]);
     delete[] qs;
     return 1;
 }
-API int bench_stat(int i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; }
+API int bench_stat(int i) { return (i >= 0 && i < 5) ? BENCH[i] : 0; }
 
 API int  job_exists(int job)          { return ht_find(job) ? 1 : 0; }
 API int  job_dept(int job)            { HNode* e = ht_find(job); return e ? e->dept : -1; }
@@ -578,8 +646,45 @@ API int  op_field(int f) {
     }
     return -1;
 }
-API int  merge_lt(int logOn)          { (void)logOn; return merge(0); }
-API int  merge_naive()                { return merge(0); }
+API int  merge_lt(int logOn) {
+    (void)logOn;
+    tl_free(); LOG.clear(); LOGIDX.clear();
+    RECEIVED = ACTIVE = 0;
+    for (int d = 0; d < MAX_DEPTS; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
+    merge_lt_run(Q, RANK, MAX_DEPTS, true, ST_ins, ST_ext, ST_cmp);
+    ST_alg = 1;
+    return TL_n;
+}
+API int  merge_naive() {
+    tl_free(); LOG.clear(); LOGIDX.clear();
+    RECEIVED = ACTIVE = 0;
+    Node* cur[MAX_DEPTS];
+    for (int d = 0; d < MAX_DEPTS; d++) {
+        cur[d] = Q[d].head;
+        RECEIVED += Q[d].count;
+        if (Q[d].count) ACTIVE++;
+    }
+    ST_ins = ACTIVE; ST_ext = 0; ST_cmp = 0; ST_alg = 2;
+    for (;;) {
+        int best = -1;
+        for (int d = 0; d < MAX_DEPTS; d++) {
+            if (!cur[d]) continue;
+            if (best < 0) { best = d; continue; }
+            ST_cmp++;
+            if (cur[d]->time < cur[best]->time ||
+                (cur[d]->time == cur[best]->time && RANK[d] < RANK[best])) {
+                best = d;
+            }
+        }
+        if (best < 0) break;
+        Node* n = cur[best];
+        tl_push(n->job, n->time, best);
+        ST_ext++;
+        cur[best] = n->next;
+        if (cur[best]) ST_ins++;
+    }
+    return TL_n;
+}
 API int  tl_job(int i)                { (void)i; return -1; }
 API int  tl_time(int i)               { (void)i; return -1; }
 API int  tl_dept(int i)               { (void)i; return -1; }

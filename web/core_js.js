@@ -7,8 +7,8 @@ function makeJsCore() {
   const Q = [], RANK = [];
   for (let i = 0; i < MAX; i++) { Q.push({ head: null, tail: null, count: 0 }); RANK.push(i); }
   let TL = { head: null, tail: null, n: 0 };
-  let RECEIVED = 0, ACTIVE = 0, ST = { ins: 0, ext: 0, cmp: 0 };
-  let LOG = [], LOGIDX = [], EX = [], BENCH = [0, 0, 0, 0];
+  let RECEIVED = 0, ACTIVE = 0, ST = { ins: 0, ext: 0, cmp: 0, alg: 0 };
+  let LOG = [], LOGIDX = [], EX = [], BENCH = [0, 0, 0, 0, 0];
   let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0;
   let seed = 0;
 
@@ -194,6 +194,56 @@ function makeJsCore() {
     }
     ev(m, EV.DONE, 0, 0, 0, 0);
   }
+
+  // Loser tree merge (A4)
+  function ltBefore(cur, ranks, a, b, st) {
+    if (!cur[a]) return false;
+    if (!cur[b]) return true;
+    st.cmp++;
+    if (cur[a].time !== cur[b].time) return cur[a].time < cur[b].time;
+    return ranks[a] < ranks[b];
+  }
+  function mergeLtRun(qs, rank, k, buildTL) {
+    const cur = new Array(k), ranks = new Array(k), origD = new Array(k);
+    let m = 0;
+    const st = { ins: 0, ext: 0, cmp: 0 };
+    for (let d = 0; d < k; d++) {
+      if (qs[d].head) {
+        cur[m] = qs[d].head; ranks[m] = rank[d]; origD[m] = d; st.ins++; m++;
+      }
+    }
+    if (m === 0) return st;
+    if (m === 1) {
+      for (let p = cur[0]; p; p = p.next) {
+        if (buildTL) tlPush(p.job, p.time, origD[0]);
+        st.ext++;
+      }
+      return st;
+    }
+    const ls = new Array(m), win = new Array(2 * m);
+    for (let i = 0; i < m; i++) win[m + i] = i;
+    for (let i = m - 1; i >= 1; i--) {
+      const a = win[2 * i], b = win[2 * i + 1];
+      if (ltBefore(cur, ranks, a, b, st)) { win[i] = a; ls[i] = b; }
+      else { win[i] = b; ls[i] = a; }
+    }
+    ls[0] = win[1];
+    while (cur[ls[0]]) {
+      let s = ls[0];
+      const n = cur[s];
+      if (buildTL) tlPush(n.job, n.time, origD[s]);
+      st.ext++;
+      cur[s] = n.next;
+      if (cur[s]) st.ins++;
+      let t = (m + s) >> 1;
+      while (t > 0) {
+        if (ltBefore(cur, ranks, ls[t], s, st)) { const tmp = s; s = ls[t]; ls[t] = tmp; }
+        t >>= 1;
+      }
+      ls[0] = s;
+    }
+    return st;
+  }
   const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed >>> 8; };
 
   return {
@@ -203,7 +253,7 @@ function makeJsCore() {
       htInit(128);
       UNDO_ST = []; REDO_ST = []; LAST_OP = null;
       tlFree(); LOG = []; LOGIDX = []; EX = [];
-      RECEIVED = ACTIVE = 0; ST = { ins: 0, ext: 0, cmp: 0 };
+      RECEIVED = ACTIVE = 0; ST = { ins: 0, ext: 0, cmp: 0, alg: 0 };
     },
     set_rank(d, r) { if (d >= 0 && d < MAX) RANK[d] = r; },
     add_job(d, time, job) {
@@ -252,11 +302,11 @@ function makeJsCore() {
       RECEIVED = ACTIVE = 0;
       for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
       mergeRun(m);
-      ST = { ins: m.ins, ext: m.ext, cmp: m.cmp };
+      ST = { ins: m.ins, ext: m.ext, cmp: m.cmp, alg: 0 };
       return TL.n;
     },
     tl_len() { return TL.n; },
-    stat(i) { return [RECEIVED, TL.n, ST.ins, ST.ext, ST.cmp, ACTIVE][i] || 0; },
+    stat(i) { return [RECEIVED, TL.n, ST.ins, ST.ext, ST.cmp, ACTIVE, ST.alg][i] || 0; },
     verify_timeline() {
       if (TL.n !== RECEIVED) return 0;
       for (let p = TL.head; p && p.next; p = p.next) {
@@ -315,9 +365,12 @@ function makeJsCore() {
         if (best < 0) break;
         cur[best] = cur[best].next;
       }
-      BENCH[1] = cmp; return 1;
+      BENCH[1] = cmp;
+      const ltSt = mergeLtRun(qs, ranks, k, false);
+      BENCH[4] = ltSt.cmp;
+      return 1;
     },
-    bench_stat(i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; },
+    bench_stat(i) { return (i >= 0 && i < 5) ? BENCH[i] : 0; },
     job_exists(job) { return htFind(job) ? 1 : 0; },
     job_dept(job) { const e = htFind(job); return e ? e.dept : -1; },
     job_time(job) { const e = htFind(job); return e ? e.time : -1; },
@@ -401,8 +454,43 @@ function makeJsCore() {
       if (f === 3) return LAST_OP.time;
       return -1;
     },
-    merge_lt(logOn) { return this.merge(0); },
-    merge_naive() { return this.merge(0); },
+    merge_lt(logOn) {
+      tlFree(); LOG = []; LOGIDX = [];
+      RECEIVED = ACTIVE = 0;
+      for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
+      const st = mergeLtRun(Q, RANK, MAX, true);
+      ST = { ins: st.ins, ext: st.ext, cmp: st.cmp, alg: 1 };
+      return TL.n;
+    },
+    merge_naive() {
+      tlFree(); LOG = []; LOGIDX = [];
+      RECEIVED = ACTIVE = 0;
+      const cur = new Array(MAX);
+      for (let d = 0; d < MAX; d++) {
+        cur[d] = Q[d].head; RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++;
+      }
+      let ins = ACTIVE, ext = 0, cmp = 0;
+      for (;;) {
+        let best = -1;
+        for (let d = 0; d < MAX; d++) {
+          if (!cur[d]) continue;
+          if (best < 0) { best = d; continue; }
+          cmp++;
+          if (cur[d].time < cur[best].time ||
+              (cur[d].time === cur[best].time && RANK[d] < RANK[best])) {
+            best = d;
+          }
+        }
+        if (best < 0) break;
+        const n = cur[best];
+        tlPush(n.job, n.time, best);
+        ext++;
+        cur[best] = n.next;
+        if (cur[best]) ins++;
+      }
+      ST = { ins, ext, cmp, alg: 2 };
+      return TL.n;
+    },
     tl_job(i) { return -1; },
     tl_time(i) { return -1; },
     tl_dept(i) { return -1; },

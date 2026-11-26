@@ -265,11 +265,56 @@ static void test_undo_redo() {
     CHECK(total_left == 0 && undo_count() == 0 && redo_count() == 1000, "undoing all 1000 ops returns to empty state");
 }
 
+static void test_loser_and_naive_merge() {
+    printf("[12] A4: Loser tree merge and naive merge\n");
+    // Empty and single queue
+    init();
+    CHECK(merge_lt(0) == 0 && stat(6) == 1 && merge_naive() == 0 && stat(6) == 2, "empty merges work and set stat(6)");
+    add_job(3, 10, 1); add_job(3, 20, 2);
+    CHECK(merge_lt(0) == 2 && verify_timeline() == 1 && stat(0) == 2 && stat(1) == 2, "single non-empty queue loser tree");
+    CHECK(merge_naive() == 2 && verify_timeline() == 1 && stat(0) == 2 && stat(1) == 2, "single non-empty queue naive");
+
+    // 50 random scenarios: all 3 merges produce identical timelines
+    seed_ = 54321u;
+    int all_match = 1;
+    int h_out[600], l_out[600], n_out[600];
+    for (int sc = 0; sc < 50; sc++) {
+        init();
+        int k = 1 + (int)(rnd() % 20u);
+        int perm[20]; for (int d = 0; d < k; d++) perm[d] = d;
+        for (int d = k - 1; d > 0; d--) { int j = (int)(rnd() % (unsigned)(d + 1)); int t = perm[d]; perm[d] = perm[j]; perm[j] = t; }
+        for (int d = 0; d < k; d++) set_rank(d, perm[d]);
+        int last[20]; for (int d = 0; d < 20; d++) last[d] = 0;
+        int n = (int)(rnd() % 500u);
+        for (int j = 0; j < n; j++) {
+            int d = (int)(rnd() % (unsigned)k);
+            last[d] += (int)(rnd() % 4u);
+            add_job(d, last[d], j);
+        }
+        int hl = merge(0);
+        if (stat(6) != 0 || verify_timeline() != 1) all_match = 0;
+        timeline(h_out);
+        int ll = merge_lt(0);
+        if (stat(6) != 1 || stat(0) != n || stat(1) != n || verify_timeline() != 1) all_match = 0;
+        timeline(l_out);
+        int nl = merge_naive();
+        if (stat(6) != 2 || stat(0) != n || stat(1) != n || verify_timeline() != 1) all_match = 0;
+        timeline(n_out);
+        if (hl != ll || hl != nl || !same(h_out, l_out, hl) || !same(h_out, n_out, hl)) all_match = 0;
+    }
+    CHECK(all_match, "50 random scenarios: heap, loser tree, and naive produce identical timelines");
+
+    // Big benchmark: loser tree comparisons <= heap comparisons
+    bench(200, 100000);
+    printf("      k=200  heap=%8d  loser=%8d  naive=%9d\n", bench_stat(0), bench_stat(4), bench_stat(1));
+    CHECK(bench_stat(4) > 0 && bench_stat(4) <= bench_stat(0), "loser tree comparisons <= heap on k=200, N=100000");
+}
+
 int main(int argc, char** argv) {
     (void)argv;
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
-    test_hash_table(); test_sort_queue(); test_undo_redo();
+    test_hash_table(); test_sort_queue(); test_undo_redo(); test_loser_and_naive_merge();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);
