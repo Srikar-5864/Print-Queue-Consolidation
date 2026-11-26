@@ -7,34 +7,173 @@ function makeJsCore() {
   const Q = [], RANK = [];
   for (let i = 0; i < MAX; i++) { Q.push({ head: null, tail: null, count: 0 }); RANK.push(i); }
   let TL = { head: null, tail: null, n: 0 };
-  let RECEIVED = 0, ACTIVE = 0, ST = { ins: 0, ext: 0, cmp: 0 };
-  let LOG = [], LOGIDX = [], EX = [], BENCH = [0, 0, 0, 0];
-  let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0;
+  let TL_JOBS = [], TL_TIMES = [], TL_DEPTS = [];
+  let RECEIVED = 0, ACTIVE = 0, ST = { ins: 0, ext: 0, cmp: 0, alg: 0 };
+  let LOG = [], LOGIDX = [], EX = [], BENCH = [0, 0, 0, 0, 0];
+  let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0, SPpaused = 0;
   let seed = 0;
+
+  // Scheduler (A6)
+  const MAX_PRINTERS = 10;
+  let SCHED_JOB = [], SCHED_PRINTER = [], SCHED_START = [], SCHED_END = [];
+  let SCHED_LOAD = new Array(MAX_PRINTERS).fill(0);
+  function schedClear() {
+    SCHED_JOB = []; SCHED_PRINTER = []; SCHED_START = []; SCHED_END = [];
+    for (let i = 0; i < MAX_PRINTERS; i++) SCHED_LOAD[i] = 0;
+  }
+  function hpBefore(a, b) {
+    return a.free_at !== b.free_at ? a.free_at < b.free_at : a.idx < b.idx;
+  }
+  function hpSiftDown(hp, n, i) {
+    for (;;) {
+      const l = 2 * i + 1, r = l + 1;
+      if (l >= n) return;
+      let c = l;
+      if (r < n && hpBefore(hp[r], hp[l])) c = r;
+      if (!hpBefore(hp[c], hp[i])) return;
+      const t = hp[c]; hp[c] = hp[i]; hp[i] = t;
+      i = c;
+    }
+  }
+
+  // Hash table (A1)
+  let HT_cap = 128, HT_n = 0;
+  let HT_buckets = new Array(HT_cap).fill(null);
+  function htHash(key, cap) {
+    let x = key >>> 0;
+    x = Math.imul((x >>> 16) ^ x, 0x45d9f3b) >>> 0;
+    x = Math.imul((x >>> 16) ^ x, 0x45d9f3b) >>> 0;
+    x = ((x >>> 16) ^ x) >>> 0;
+    return x % cap;
+  }
+  function htInit(cap = 128) {
+    HT_cap = cap; HT_n = 0;
+    HT_buckets = new Array(HT_cap).fill(null);
+  }
+  function htRehash(newCap) {
+    const nb = new Array(newCap).fill(null);
+    for (let i = 0; i < HT_cap; i++) {
+      let p = HT_buckets[i];
+      while (p) {
+        const nxt = p.next;
+        const idx = htHash(p.job, newCap);
+        p.next = nb[idx];
+        nb[idx] = p;
+        p = nxt;
+      }
+    }
+    HT_buckets = nb;
+    HT_cap = newCap;
+  }
+  function htFind(job) {
+    const idx = htHash(job, HT_cap);
+    for (let p = HT_buckets[idx]; p; p = p.next) {
+      if (p.job === job) return p;
+    }
+    return null;
+  }
+  function htInsert(job, dept, time, dur = 1, prio = 0) {
+    if ((HT_n + 1) * 10 > HT_cap * 7) htRehash(HT_cap * 2);
+    const idx = htHash(job, HT_cap);
+    HT_buckets[idx] = { job, dept, time, dur, tl_idx: -1, prio, next: HT_buckets[idx] };
+    HT_n++;
+  }
+  function htRemove(job) {
+    const idx = htHash(job, HT_cap);
+    let prev = null, cur = HT_buckets[idx];
+    while (cur) {
+      if (cur.job === job) {
+        if (prev) prev.next = cur.next; else HT_buckets[idx] = cur.next;
+        HT_n--;
+        return true;
+      }
+      prev = cur; cur = cur.next;
+    }
+    return false;
+  }
+  function htResetTl() {
+    for (let i = 0; i < HT_cap; i++) {
+      for (let p = HT_buckets[i]; p; p = p.next) p.tl_idx = -1;
+    }
+  }
+
+  // Undo / redo stacks (A3)
+  let UNDO_ST = [], REDO_ST = [];
+  let LAST_OP = null;
+  function recordOp(type, dept, job, time, dur, prio, pos) {
+    UNDO_ST.push({ type, dept, job, time, dur, prio, pos });
+    REDO_ST = [];
+  }
 
   const qPush = (q, job, time, dept) => {
     const n = { job, time, dept, next: null };
     if (q.tail) q.tail.next = n; else q.head = n;
     q.tail = n; q.count++;
   };
-  const qRemove = (q, job) => {
-    let prev = null, cur = q.head;
+  const qRemove = (q, job, out) => {
+    let prev = null, cur = q.head, idx = 0;
     while (cur) {
       if (cur.job === job) {
+        if (out) { out.pos = idx; out.time = cur.time; }
         if (prev) prev.next = cur.next; else q.head = cur.next;
         if (cur === q.tail) q.tail = prev;
         q.count--; return true;
       }
-      prev = cur; cur = cur.next;
+      prev = cur; cur = cur.next; idx++;
     }
     return false;
   };
+  const qInsertAt = (q, pos, job, time, dept) => {
+    const n = { job, time, dept, next: null };
+    if (pos <= 0 || !q.head) {
+      n.next = q.head; q.head = n;
+      if (!q.tail) q.tail = n;
+      q.count++; return;
+    }
+    let prev = q.head;
+    for (let i = 0; i < pos - 1 && prev.next; i++) prev = prev.next;
+    n.next = prev.next; prev.next = n;
+    if (!n.next) q.tail = n;
+    q.count++;
+  };
   const qClear = (q) => { q.head = q.tail = null; q.count = 0; };
-  const tlFree = () => { TL = { head: null, tail: null, n: 0 }; };
+
+  // Linked list merge sort (A2)
+  function llMerge(a, b) {
+    const dummy = { job: 0, time: 0, dept: 0, next: null };
+    let tail = dummy;
+    while (a && b) {
+      if (a.time <= b.time) { tail.next = a; a = a.next; }
+      else { tail.next = b; b = b.next; }
+      tail = tail.next;
+    }
+    tail.next = a ? a : b;
+    return dummy.next;
+  }
+  function llMergesort(head) {
+    if (!head || !head.next) return head;
+    let slow = head, fast = head.next;
+    while (fast && fast.next) { slow = slow.next; fast = fast.next.next; }
+    const right = slow.next;
+    slow.next = null;
+    return llMerge(llMergesort(head), llMergesort(right));
+  }
+  const tlFree = () => { TL = { head: null, tail: null, n: 0 }; TL_JOBS = []; TL_TIMES = []; TL_DEPTS = []; };
   const tlPush = (job, time, dept) => {
     const n = { job, time, dept, next: null };
     if (TL.tail) TL.tail.next = n; else TL.head = n;
     TL.tail = n; TL.n++;
+  };
+  const tlFinalize = () => {
+    htResetTl();
+    TL_JOBS = []; TL_TIMES = []; TL_DEPTS = [];
+    let idx = 0;
+    for (let p = TL.head; p; p = p.next) {
+      TL_JOBS.push(p.job); TL_TIMES.push(p.time); TL_DEPTS.push(p.dept);
+      const e = htFind(p.job);
+      if (e) e.tl_idx = idx;
+      idx++;
+    }
   };
 
   function newMerger(qs, rank, k, logOn, buildTL) {
@@ -90,24 +229,97 @@ function makeJsCore() {
     }
     ev(m, EV.DONE, 0, 0, 0, 0);
   }
+
+  // Loser tree merge (A4)
+  function ltBefore(cur, ranks, a, b, st) {
+    if (!cur[a]) return false;
+    if (!cur[b]) return true;
+    st.cmp++;
+    if (cur[a].time !== cur[b].time) return cur[a].time < cur[b].time;
+    return ranks[a] < ranks[b];
+  }
+  function mergeLtRun(qs, rank, k, buildTL) {
+    const cur = new Array(k), ranks = new Array(k), origD = new Array(k);
+    let m = 0;
+    const st = { ins: 0, ext: 0, cmp: 0 };
+    for (let d = 0; d < k; d++) {
+      if (qs[d].head) {
+        cur[m] = qs[d].head; ranks[m] = rank[d]; origD[m] = d; st.ins++; m++;
+      }
+    }
+    if (m === 0) return st;
+    if (m === 1) {
+      for (let p = cur[0]; p; p = p.next) {
+        if (buildTL) tlPush(p.job, p.time, origD[0]);
+        st.ext++;
+      }
+      return st;
+    }
+    const ls = new Array(m), win = new Array(2 * m);
+    for (let i = 0; i < m; i++) win[m + i] = i;
+    for (let i = m - 1; i >= 1; i--) {
+      const a = win[2 * i], b = win[2 * i + 1];
+      if (ltBefore(cur, ranks, a, b, st)) { win[i] = a; ls[i] = b; }
+      else { win[i] = b; ls[i] = a; }
+    }
+    ls[0] = win[1];
+    while (cur[ls[0]]) {
+      let s = ls[0];
+      const n = cur[s];
+      if (buildTL) tlPush(n.job, n.time, origD[s]);
+      st.ext++;
+      cur[s] = n.next;
+      if (cur[s]) st.ins++;
+      let t = (m + s) >> 1;
+      while (t > 0) {
+        if (ltBefore(cur, ranks, ls[t], s, st)) { const tmp = s; s = ls[t]; ls[t] = tmp; }
+        t >>= 1;
+      }
+      ls[0] = s;
+    }
+    return st;
+  }
   const rnd = () => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed >>> 8; };
 
   return {
     name: 'JavaScript port',
     init() {
       for (let d = 0; d < MAX; d++) { qClear(Q[d]); RANK[d] = d; }
-      tlFree(); LOG = []; LOGIDX = []; EX = [];
-      RECEIVED = ACTIVE = 0; ST = { ins: 0, ext: 0, cmp: 0 };
+      htInit(128);
+      UNDO_ST = []; REDO_ST = []; LAST_OP = null;
+      tlFree(); schedClear(); LOG = []; LOGIDX = []; EX = [];
+      RECEIVED = ACTIVE = 0; ST = { ins: 0, ext: 0, cmp: 0, alg: 0 };
     },
     set_rank(d, r) { if (d >= 0 && d < MAX) RANK[d] = r; },
     add_job(d, time, job) {
       if (d < 0 || d >= MAX) return 2;
       if (time < 0) return 3;
+      if (htFind(job)) return 4;
       if (Q[d].tail && time < Q[d].tail.time) return 1;
-      qPush(Q[d], job, time, d); return 0;
+      const pos = Q[d].count;
+      qPush(Q[d], job, time, d); htInsert(job, d, time);
+      recordOp(1, d, job, time, 1, 0, pos);
+      return 0;
     },
-    delete_job(d, job) { return (d >= 0 && d < MAX && qRemove(Q[d], job)) ? 1 : 0; },
-    clear_queue(d) { if (d >= 0 && d < MAX) qClear(Q[d]); },
+    delete_job(d, job) {
+      if (d < 0 || d >= MAX) return 0;
+      const e = htFind(job);
+      const dur = e ? e.dur : 1, prio = e ? e.prio : 0;
+      const out = { pos: 0, time: 0 };
+      if (qRemove(Q[d], job, out)) {
+        htRemove(job);
+        recordOp(2, d, job, out.time, dur, prio, out.pos);
+        return 1;
+      }
+      return 0;
+    },
+    clear_queue(d) {
+      if (d >= 0 && d < MAX) {
+        for (let p = Q[d].head; p; p = p.next) htRemove(p.job);
+        qClear(Q[d]);
+        UNDO_ST = []; REDO_ST = [];
+      }
+    },
     q_count(d) { return (d >= 0 && d < MAX) ? Q[d].count : 0; },
     export_queue(d) {
       EX = [];
@@ -120,16 +332,17 @@ function makeJsCore() {
     exp_time(i) { return (i >= 0 && 3 * i < EX.length) ? EX[3 * i + 1] : -1; },
     exp_dept(i) { return (i >= 0 && 3 * i < EX.length) ? EX[3 * i + 2] : -1; },
     merge(logOn) {
-      tlFree(); LOG = []; LOGIDX = [];
+      tlFree(); schedClear(); LOG = []; LOGIDX = [];
       const m = newMerger(Q, RANK, MAX, logOn !== 0, true);
       RECEIVED = ACTIVE = 0;
       for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
       mergeRun(m);
-      ST = { ins: m.ins, ext: m.ext, cmp: m.cmp };
+      tlFinalize();
+      ST = { ins: m.ins, ext: m.ext, cmp: m.cmp, alg: 0 };
       return TL.n;
     },
     tl_len() { return TL.n; },
-    stat(i) { return [RECEIVED, TL.n, ST.ins, ST.ext, ST.cmp, ACTIVE][i] || 0; },
+    stat(i) { return [RECEIVED, TL.n, ST.ins, ST.ext, ST.cmp, ACTIVE, ST.alg][i] || 0; },
     verify_timeline() {
       if (TL.n !== RECEIVED) return 0;
       for (let p = TL.head; p && p.next; p = p.next) {
@@ -150,7 +363,7 @@ function makeJsCore() {
     },
     spool_init(cap) {
       if (cap < 1) cap = 1;
-      SP = new Array(cap).fill(-1); SPcap = cap; SPf = SPr = SPn = 0;
+      SP = new Array(cap).fill(-1); SPcap = cap; SPf = SPr = SPn = 0; SPpaused = 0;
     },
     spool_enqueue(job) {
       if (!SP || SPn === SPcap) return 0;
@@ -158,6 +371,7 @@ function makeJsCore() {
     },
     spool_dequeue() {
       if (!SP || SPn === 0) return -1;
+      if (SPpaused) return -2;
       const j = SP[SPf]; SP[SPf] = -1; SPf = (SPf + 1) % SPcap; SPn--; return j;
     },
     spool_size() { return SPn; }, spool_front() { return SPf; }, spool_rear() { return SPr; },
@@ -188,9 +402,208 @@ function makeJsCore() {
         if (best < 0) break;
         cur[best] = cur[best].next;
       }
-      BENCH[1] = cmp; return 1;
+      BENCH[1] = cmp;
+      const ltSt = mergeLtRun(qs, ranks, k, false);
+      BENCH[4] = ltSt.cmp;
+      return 1;
     },
-    bench_stat(i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; },
+    bench_stat(i) { return (i >= 0 && i < 5) ? BENCH[i] : 0; },
+    job_exists(job) { return htFind(job) ? 1 : 0; },
+    job_dept(job) { const e = htFind(job); return e ? e.dept : -1; },
+    job_time(job) { const e = htFind(job); return e ? e.time : -1; },
+    set_duration(job, dur) {
+      if (dur < 1) return 0;
+      const e = htFind(job);
+      if (!e) return 0;
+      e.dur = dur; return 1;
+    },
+    get_duration(job) { const e = htFind(job); return e ? e.dur : -1; },
+    add_job_raw(d, time, job) {
+      if (d < 0 || d >= MAX) return 2;
+      if (time < 0) return 3;
+      if (htFind(job)) return 4;
+      const pos = Q[d].count;
+      qPush(Q[d], job, time, d); htInsert(job, d, time);
+      recordOp(1, d, job, time, 1, 0, pos);
+      return 0;
+    },
+    sort_queue(d) {
+      if (d < 0 || d >= MAX) return -1;
+      if (Q[d].head && Q[d].head.next) {
+        Q[d].head = llMergesort(Q[d].head);
+        let p = Q[d].head, cnt = 0, last = null;
+        while (p) { last = p; cnt++; p = p.next; }
+        Q[d].tail = last;
+        Q[d].count = cnt;
+      }
+      return Q[d].count;
+    },
+    is_sorted(d) {
+      if (d < 0 || d >= MAX) return 0;
+      for (let p = Q[d].head; p && p.next; p = p.next) {
+        if (p.time > p.next.time) return 0;
+      }
+      return 1;
+    },
+    undo() {
+      if (UNDO_ST.length === 0) return 0;
+      const op = UNDO_ST.pop();
+      if (op.type === 1) {
+        const e = htFind(op.job);
+        if (e) { op.dur = e.dur; op.prio = e.prio; }
+        const out = { pos: 0, time: 0 };
+        qRemove(Q[op.dept], op.job, out);
+        op.pos = out.pos;
+        htRemove(op.job);
+      } else {
+        qInsertAt(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        htInsert(op.job, op.dept, op.time, op.dur, op.prio);
+      }
+      REDO_ST.push(op);
+      LAST_OP = op;
+      return 1;
+    },
+    redo() {
+      if (REDO_ST.length === 0) return 0;
+      const op = REDO_ST.pop();
+      if (op.type === 1) {
+        qInsertAt(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        htInsert(op.job, op.dept, op.time, op.dur, op.prio);
+      } else {
+        const e = htFind(op.job);
+        if (e) { op.dur = e.dur; op.prio = e.prio; }
+        const out = { pos: 0, time: 0 };
+        qRemove(Q[op.dept], op.job, out);
+        op.pos = out.pos;
+        htRemove(op.job);
+      }
+      UNDO_ST.push(op);
+      LAST_OP = op;
+      return 1;
+    },
+    undo_count() { return UNDO_ST.length; },
+    redo_count() { return REDO_ST.length; },
+    op_field(f) {
+      if (!LAST_OP) return -1;
+      if (f === 0) return LAST_OP.type;
+      if (f === 1) return LAST_OP.dept;
+      if (f === 2) return LAST_OP.job;
+      if (f === 3) return LAST_OP.time;
+      return -1;
+    },
+    merge_lt(logOn) {
+      tlFree(); schedClear(); LOG = []; LOGIDX = [];
+      RECEIVED = ACTIVE = 0;
+      for (let d = 0; d < MAX; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
+      const st = mergeLtRun(Q, RANK, MAX, true);
+      tlFinalize();
+      ST = { ins: st.ins, ext: st.ext, cmp: st.cmp, alg: 1 };
+      return TL.n;
+    },
+    merge_naive() {
+      tlFree(); schedClear(); LOG = []; LOGIDX = [];
+      RECEIVED = ACTIVE = 0;
+      const cur = new Array(MAX);
+      for (let d = 0; d < MAX; d++) {
+        cur[d] = Q[d].head; RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++;
+      }
+      let ins = ACTIVE, ext = 0, cmp = 0;
+      for (;;) {
+        let best = -1;
+        for (let d = 0; d < MAX; d++) {
+          if (!cur[d]) continue;
+          if (best < 0) { best = d; continue; }
+          cmp++;
+          if (cur[d].time < cur[best].time ||
+              (cur[d].time === cur[best].time && RANK[d] < RANK[best])) {
+            best = d;
+          }
+        }
+        if (best < 0) break;
+        const n = cur[best];
+        tlPush(n.job, n.time, best);
+        ext++;
+        cur[best] = n.next;
+        if (cur[best]) ins++;
+      }
+      tlFinalize();
+      ST = { ins, ext, cmp, alg: 2 };
+      return TL.n;
+    },
+    tl_job(i) { return (i >= 0 && i < TL_JOBS.length) ? TL_JOBS[i] : -1; },
+    tl_time(i) { return (i >= 0 && i < TL_TIMES.length) ? TL_TIMES[i] : -1; },
+    tl_dept(i) { return (i >= 0 && i < TL_DEPTS.length) ? TL_DEPTS[i] : -1; },
+    tl_lower_bound(t) {
+      let lo = 0, hi = TL_TIMES.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (TL_TIMES[mid] < t) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    },
+    tl_upper_bound(t) {
+      let lo = 0, hi = TL_TIMES.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (TL_TIMES[mid] <= t) lo = mid + 1; else hi = mid;
+      }
+      return lo;
+    },
+    find_in_timeline(job) {
+      const e = htFind(job);
+      return e ? e.tl_idx : -1;
+    },
+    sched_run(printers) {
+      if (printers < 1 || printers > MAX_PRINTERS) return -1;
+      schedClear();
+      if (TL_JOBS.length === 0) return 0;
+      const hp = [];
+      for (let p = 0; p < printers; p++) hp.push({ free_at: 0, idx: p });
+      let makespan = 0;
+      for (let i = 0; i < TL_JOBS.length; i++) {
+        const job = TL_JOBS[i], jtime = TL_TIMES[i];
+        const e = htFind(job);
+        const dur = e ? e.dur : 1;
+        const p = hp[0].idx;
+        const start = hp[0].free_at > jtime ? hp[0].free_at : jtime;
+        const end = start + dur;
+        SCHED_JOB.push(job);
+        SCHED_PRINTER.push(p);
+        SCHED_START.push(start);
+        SCHED_END.push(end);
+        SCHED_LOAD[p] += dur;
+        if (end > makespan) makespan = end;
+        hp[0].free_at = end;
+        hpSiftDown(hp, printers, 0);
+      }
+      return makespan;
+    },
+    sched_count() { return SCHED_JOB.length; },
+    sched_job(i) { return (i >= 0 && i < SCHED_JOB.length) ? SCHED_JOB[i] : -1; },
+    sched_printer(i) { return (i >= 0 && i < SCHED_PRINTER.length) ? SCHED_PRINTER[i] : -1; },
+    sched_start(i) { return (i >= 0 && i < SCHED_START.length) ? SCHED_START[i] : -1; },
+    sched_end(i) { return (i >= 0 && i < SCHED_END.length) ? SCHED_END[i] : -1; },
+    sched_load(p) { return (p >= 0 && p < MAX_PRINTERS) ? SCHED_LOAD[p] : 0; },
+    spool_cancel(job) {
+      if (!SP || SPn === 0) return 0;
+      for (let k = 0; k < SPn; k++) {
+        const idx = (SPf + k) % SPcap;
+        if (SP[idx] === job) {
+          for (let j = k; j < SPn - 1; j++) {
+            const cur = (SPf + j) % SPcap;
+            const nxt = (SPf + j + 1) % SPcap;
+            SP[cur] = SP[nxt];
+          }
+          SPr = (SPr - 1 + SPcap) % SPcap;
+          SP[SPr] = -1;
+          SPn--;
+          return 1;
+        }
+      }
+      return 0;
+    },
+    spool_pause(flag) { SPpaused = flag !== 0 ? 1 : 0; },
+    spool_paused() { return SPpaused; },
   };
 }
 if (typeof module !== 'undefined') module.exports = { makeJsCore };

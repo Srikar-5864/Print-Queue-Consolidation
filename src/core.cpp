@@ -54,17 +54,36 @@ static void q_push(Queue& q, int job, int time, int dept) {   // O(1) enqueue
     q.tail = n; q.count++;
 }
 
-static bool q_remove(Queue& q, int job) {                     // O(n) deletion
-    Node* prev = nullptr; Node* cur = q.head;
+static bool q_remove(Queue& q, int job, int* out_pos = nullptr, int* out_time = nullptr) { // O(n) deletion
+    Node* prev = nullptr; Node* cur = q.head; int idx = 0;
     while (cur) {
         if (cur->job == job) {
+            if (out_pos) *out_pos = idx;
+            if (out_time) *out_time = cur->time;
             if (prev) prev->next = cur->next; else q.head = cur->next;
             if (cur == q.tail) q.tail = prev;
             delete cur; q.count--; return true;
         }
-        prev = cur; cur = cur->next;
+        prev = cur; cur = cur->next; idx++;
     }
     return false;
+}
+
+static void q_insert_at(Queue& q, int pos, int job, int time, int dept) {
+    Node* n = new Node{job, time, dept, nullptr};
+    if (pos <= 0 || !q.head) {
+        n->next = q.head;
+        q.head = n;
+        if (!q.tail) q.tail = n;
+        q.count++;
+        return;
+    }
+    Node* prev = q.head;
+    for (int i = 0; i < pos - 1 && prev->next; i++) prev = prev->next;
+    n->next = prev->next;
+    prev->next = n;
+    if (!n->next) q.tail = n;
+    q.count++;
 }
 
 static void q_clear(Queue& q) {
@@ -72,23 +91,209 @@ static void q_clear(Queue& q) {
     q.tail = nullptr; q.count = 0;
 }
 
+// ------------------------------------------------------------ linked list merge sort (A2)
+static Node* ll_merge(Node* a, Node* b) {
+    Node dummy{0, 0, 0, nullptr};
+    Node* tail = &dummy;
+    while (a && b) {
+        if (a->time <= b->time) { tail->next = a; a = a->next; }
+        else                    { tail->next = b; b = b->next; }
+        tail = tail->next;
+    }
+    tail->next = a ? a : b;
+    return dummy.next;
+}
+
+static Node* ll_mergesort(Node* head) {
+    if (!head || !head->next) return head;
+    Node* slow = head;
+    Node* fast = head->next;
+    while (fast && fast->next) {
+        slow = slow->next;
+        fast = fast->next->next;
+    }
+    Node* right = slow->next;
+    slow->next = nullptr;
+    return ll_merge(ll_mergesort(head), ll_mergesort(right));
+}
+
+// ---------------------------------------------------------------- hash table (A1)
+struct HNode {
+    int job, dept, time, dur, tl_idx, prio;
+    HNode* next;
+};
+static HNode** HT_buckets = nullptr;
+static int HT_cap = 0;
+static int HT_n = 0;
+
+static int ht_hash(int key, int cap) {
+    unsigned int x = (unsigned int)key;
+    x = ((x >> 16) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16) ^ x) * 0x45d9f3bu;
+    x = (x >> 16) ^ x;
+    return (int)(x % (unsigned int)cap);
+}
+
+static void ht_clear() {
+    for (int i = 0; i < HT_cap; i++) {
+        HNode* p = HT_buckets[i];
+        while (p) { HNode* t = p; p = p->next; delete t; }
+        HT_buckets[i] = nullptr;
+    }
+    HT_n = 0;
+}
+
+static void ht_init(int cap = 128) {
+    if (HT_buckets) { ht_clear(); delete[] HT_buckets; }
+    HT_cap = cap;
+    HT_buckets = new HNode*[HT_cap];
+    for (int i = 0; i < HT_cap; i++) HT_buckets[i] = nullptr;
+    HT_n = 0;
+}
+
+static void ht_rehash(int new_cap) {
+    HNode** nb = new HNode*[new_cap];
+    for (int i = 0; i < new_cap; i++) nb[i] = nullptr;
+    for (int i = 0; i < HT_cap; i++) {
+        HNode* p = HT_buckets[i];
+        while (p) {
+            HNode* nxt = p->next;
+            int idx = ht_hash(p->job, new_cap);
+            p->next = nb[idx];
+            nb[idx] = p;
+            p = nxt;
+        }
+    }
+    delete[] HT_buckets;
+    HT_buckets = nb;
+    HT_cap = new_cap;
+}
+
+static HNode* ht_find(int job) {
+    if (!HT_buckets || HT_cap == 0) return nullptr;
+    int idx = ht_hash(job, HT_cap);
+    for (HNode* p = HT_buckets[idx]; p; p = p->next) {
+        if (p->job == job) return p;
+    }
+    return nullptr;
+}
+
+static void ht_insert(int job, int dept, int time, int dur = 1, int prio = 0) {
+    if (!HT_buckets || HT_cap == 0) ht_init(128);
+    if ((HT_n + 1) * 10 > HT_cap * 7) ht_rehash(HT_cap * 2);
+    int idx = ht_hash(job, HT_cap);
+    HNode* n = new HNode{job, dept, time, dur, -1, prio, HT_buckets[idx]};
+    HT_buckets[idx] = n;
+    HT_n++;
+}
+
+static bool ht_remove(int job) {
+    if (!HT_buckets || HT_cap == 0) return false;
+    int idx = ht_hash(job, HT_cap);
+    HNode* prev = nullptr;
+    HNode* cur = HT_buckets[idx];
+    while (cur) {
+        if (cur->job == job) {
+            if (prev) prev->next = cur->next; else HT_buckets[idx] = cur->next;
+            delete cur;
+            HT_n--;
+            return true;
+        }
+        prev = cur; cur = cur->next;
+    }
+    return false;
+}
+
+static void ht_reset_tl() {
+    for (int i = 0; i < HT_cap; i++) {
+        for (HNode* p = HT_buckets[i]; p; p = p->next) p->tl_idx = -1;
+    }
+}
+
+// ---------------------------------------------------------------- undo / redo stacks (A3)
+struct Op { int type, dept, job, time, dur, prio, pos; }; // type: 1=add, 2=delete
+struct OpStack {
+    Op* a; int n; int cap;
+    void push(const Op& v) {
+        if (n == cap) {
+            int nc = cap ? cap * 2 : 64;
+            Op* b = new Op[nc];
+            for (int i = 0; i < n; i++) b[i] = a[i];
+            delete[] a; a = b; cap = nc;
+        }
+        a[n++] = v;
+    }
+    Op pop() { return a[--n]; }
+    void clear() { n = 0; }
+};
+static OpStack UNDO_ST, REDO_ST;
+static Op LAST_OP = {0, -1, -1, -1, 1, 0, 0};
+static bool HAS_LAST_OP = false;
+
+static void record_op(int type, int dept, int job, int time, int dur, int prio, int pos) {
+    UNDO_ST.push(Op{type, dept, job, time, dur, prio, pos});
+    REDO_ST.clear();
+}
+
 // ---------------------------------------------------------------- global state
 static Queue Q[MAX_DEPTS];            // one linked queue per department slot
 static int   RANK[MAX_DEPTS];         // alphabetical rank of the department code
 static Node* TL_head; static Node* TL_tail; static int TL_n;   // merged timeline
-static int   RECEIVED, ACTIVE, ST_ins, ST_ext, ST_cmp;
+static IntArr TL_JOBS, TL_TIMES, TL_DEPTS;                     // flat timeline arrays (A5)
+static int   RECEIVED, ACTIVE, ST_ins, ST_ext, ST_cmp, ST_alg;
 static IntArr LOG, LOGIDX, EX;        // step log, log index, export buffer
-static int   BENCH[4];
-static int*  SP; static int SPcap, SPf, SPr, SPn;              // circular queue
+static int   BENCH[5];
+static int*  SP; static int SPcap, SPf, SPr, SPn, SPpaused;    // circular queue
+
+// ---------------------------------------------------------------- scheduler (A6)
+#define MAX_PRINTERS 10
+struct PrinterSlot { int free_at, idx; };
+static IntArr SCHED_JOB, SCHED_PRINTER, SCHED_START, SCHED_END;
+static int SCHED_LOAD[MAX_PRINTERS];
+
+static void sched_clear() {
+    SCHED_JOB.clear(); SCHED_PRINTER.clear(); SCHED_START.clear(); SCHED_END.clear();
+    for (int i = 0; i < MAX_PRINTERS; i++) SCHED_LOAD[i] = 0;
+}
+
+static bool hp_before(const PrinterSlot& a, const PrinterSlot& b) {
+    return (a.free_at != b.free_at) ? (a.free_at < b.free_at) : (a.idx < b.idx);
+}
+
+static void hp_sift_down(PrinterSlot* hp, int n, int i) {
+    for (;;) {
+        int l = 2 * i + 1, r = l + 1;
+        if (l >= n) return;
+        int c = l;
+        if (r < n && hp_before(hp[r], hp[l])) c = r;
+        if (!hp_before(hp[c], hp[i])) return;
+        PrinterSlot t = hp[c]; hp[c] = hp[i]; hp[i] = t;
+        i = c;
+    }
+}
 
 static void tl_free() {
     while (TL_head) { Node* t = TL_head; TL_head = t->next; delete t; }
     TL_tail = nullptr; TL_n = 0;
+    TL_JOBS.clear(); TL_TIMES.clear(); TL_DEPTS.clear();
 }
 static void tl_push(int job, int time, int dept) {            // O(1) append
     Node* n = new Node{job, time, dept, nullptr};
     if (TL_tail) TL_tail->next = n; else TL_head = n;
     TL_tail = n; TL_n++;
+}
+static void tl_finalize() {
+    ht_reset_tl();
+    TL_JOBS.clear(); TL_TIMES.clear(); TL_DEPTS.clear();
+    int idx = 0;
+    for (Node* p = TL_head; p; p = p->next) {
+        TL_JOBS.push(p->job);
+        TL_TIMES.push(p->time);
+        TL_DEPTS.push(p->dept);
+        HNode* e = ht_find(p->job);
+        if (e) e->tl_idx = idx;
+        idx++;
+    }
 }
 
 // ------------------------------------------------------------- k-way merger
@@ -162,24 +367,112 @@ static void merge_run(Merger& m) {
     ev(m, EV_DONE, 0, 0, 0, 0);
 }
 
+// ------------------------------------------------------------- loser tree merge (A4)
+static bool lt_before(Node* const* cur, const int* ranks, int a, int b, int& cmp) {
+    if (!cur[a]) return false;
+    if (!cur[b]) return true;
+    cmp++;
+    if (cur[a]->time != cur[b]->time) return cur[a]->time < cur[b]->time;
+    return ranks[a] < ranks[b];
+}
+
+static void merge_lt_run(Queue* qs, const int* rank, int k, bool buildTL,
+                         int& out_ins, int& out_ext, int& out_cmp) {
+    Node* cur[MAX_DEPTS];
+    int ranks[MAX_DEPTS];
+    int orig_d[MAX_DEPTS];
+    int m = 0;
+    out_ins = out_ext = out_cmp = 0;
+    for (int d = 0; d < k; d++) {
+        if (qs[d].head) {
+            cur[m] = qs[d].head;
+            ranks[m] = rank[d];
+            orig_d[m] = d;
+            out_ins++;
+            m++;
+        }
+    }
+    if (m == 0) return;
+    if (m == 1) {
+        for (Node* p = cur[0]; p; p = p->next) {
+            if (buildTL) tl_push(p->job, p->time, orig_d[0]);
+            out_ext++;
+        }
+        return;
+    }
+    int ls[MAX_DEPTS];
+    int win[2 * MAX_DEPTS];
+    for (int i = 0; i < m; i++) win[m + i] = i;
+    for (int i = m - 1; i >= 1; i--) {
+        int a = win[2 * i], b = win[2 * i + 1];
+        if (lt_before(cur, ranks, a, b, out_cmp)) {
+            win[i] = a; ls[i] = b;
+        } else {
+            win[i] = b; ls[i] = a;
+        }
+    }
+    ls[0] = win[1];
+
+    while (cur[ls[0]]) {
+        int s = ls[0];
+        Node* n = cur[s];
+        if (buildTL) tl_push(n->job, n->time, orig_d[s]);
+        out_ext++;
+        cur[s] = n->next;
+        if (cur[s]) out_ins++;
+        int t = (m + s) >> 1;
+        while (t > 0) {
+            if (lt_before(cur, ranks, ls[t], s, out_cmp)) {
+                int tmp = s; s = ls[t]; ls[t] = tmp;
+            }
+            t >>= 1;
+        }
+        ls[0] = s;
+    }
+}
+
 // =============================================================== exported API
 API void init() {
     for (int d = 0; d < MAX_DEPTS; d++) { q_clear(Q[d]); RANK[d] = d; }
-    tl_free(); LOG.clear(); LOGIDX.clear(); EX.clear();
-    RECEIVED = ACTIVE = ST_ins = ST_ext = ST_cmp = 0;
+    ht_init(128);
+    UNDO_ST.clear(); REDO_ST.clear(); HAS_LAST_OP = false;
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear(); EX.clear();
+    RECEIVED = ACTIVE = ST_ins = ST_ext = ST_cmp = ST_alg = 0;
 }
 API void set_rank(int d, int r) { if (d >= 0 && d < MAX_DEPTS) RANK[d] = r; }
 
-// 0 = ok, 1 = time earlier than the last job of that queue, 2 = bad department, 3 = bad time
+// 0 = ok, 1 = time earlier than the last job of that queue, 2 = bad department, 3 = bad time, 4 = duplicate job ID
 API int add_job(int d, int time, int job) {
     if (d < 0 || d >= MAX_DEPTS) return 2;
     if (time < 0) return 3;
+    if (ht_find(job)) return 4;
     if (Q[d].tail && time < Q[d].tail->time) return 1;
+    int pos = Q[d].count;
     q_push(Q[d], job, time, d);
+    ht_insert(job, d, time);
+    record_op(1, d, job, time, 1, 0, pos);
     return 0;
 }
-API int  delete_job(int d, int job) { return (d >= 0 && d < MAX_DEPTS && q_remove(Q[d], job)) ? 1 : 0; }
-API void clear_queue(int d)         { if (d >= 0 && d < MAX_DEPTS) q_clear(Q[d]); }
+API int  delete_job(int d, int job) {
+    if (d < 0 || d >= MAX_DEPTS) return 0;
+    HNode* e = ht_find(job);
+    int dur = e ? e->dur : 1;
+    int prio = e ? e->prio : 0;
+    int pos = 0, time = 0;
+    if (q_remove(Q[d], job, &pos, &time)) {
+        ht_remove(job);
+        record_op(2, d, job, time, dur, prio, pos);
+        return 1;
+    }
+    return 0;
+}
+API void clear_queue(int d) {
+    if (d >= 0 && d < MAX_DEPTS) {
+        for (Node* p = Q[d].head; p; p = p->next) ht_remove(p->job);
+        q_clear(Q[d]);
+        UNDO_ST.clear(); REDO_ST.clear();
+    }
+}
 API int  q_count(int d)             { return (d >= 0 && d < MAX_DEPTS) ? Q[d].count : 0; }
 
 // Copy a queue / the timeline into the export buffer (one traversal), then read O(1).
@@ -199,21 +492,23 @@ API int exp_time(int i) { return (i >= 0 && 3 * i < EX.n) ? EX.a[3 * i + 1] : -1
 API int exp_dept(int i) { return (i >= 0 && 3 * i < EX.n) ? EX.a[3 * i + 2] : -1; }
 
 API int merge(int logOn) {
-    tl_free(); LOG.clear(); LOGIDX.clear();
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear();
     Merger m;
     m.qs = Q; m.rank = RANK; m.k = MAX_DEPTS; m.logOn = (logOn != 0); m.buildTL = true;
     RECEIVED = ACTIVE = 0;
     for (int d = 0; d < MAX_DEPTS; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
     merge_run(m);
-    ST_ins = m.ins; ST_ext = m.ext; ST_cmp = m.cmp;
+    tl_finalize();
+    ST_ins = m.ins; ST_ext = m.ext; ST_cmp = m.cmp; ST_alg = 0;
     return TL_n;
 }
 API int tl_len() { return TL_n; }
-// 0 received, 1 produced, 2 heap insertions, 3 heap extractions, 4 comparisons, 5 active departments
+// 0 received, 1 produced, 2 insertions, 3 extractions, 4 comparisons, 5 active departments, 6 algorithm
 API int stat(int i) {
     switch (i) {
         case 0: return RECEIVED; case 1: return TL_n; case 2: return ST_ins;
         case 3: return ST_ext;   case 4: return ST_cmp; case 5: return ACTIVE;
+        case 6: return ST_alg;
     }
     return 0;
 }
@@ -243,7 +538,7 @@ API int log_field(int i, int f) {
 API void spool_init(int cap) {
     delete[] SP;
     if (cap < 1) cap = 1;
-    SP = new int[cap]; SPcap = cap; SPf = SPr = SPn = 0;
+    SP = new int[cap]; SPcap = cap; SPf = SPr = SPn = 0; SPpaused = 0;
     for (int i = 0; i < cap; i++) SP[i] = -1;
 }
 API int spool_enqueue(int job) {
@@ -252,6 +547,7 @@ API int spool_enqueue(int job) {
 }
 API int spool_dequeue() {
     if (!SP || SPn == 0) return -1;                           // empty
+    if (SPpaused) return -2;                                  // paused and not empty
     int j = SP[SPf]; SP[SPf] = -1; SPf = (SPf + 1) % SPcap; SPn--; return j;
 }
 API int spool_size()  { return SPn; }
@@ -296,8 +592,219 @@ API int bench(int k, int n) {
         cur[best] = cur[best]->next;
     }
     BENCH[1] = cmp;
+    int lt_ins = 0, lt_ext = 0, lt_cmp = 0;
+    merge_lt_run(qs, ranks, k, false, lt_ins, lt_ext, lt_cmp);
+    BENCH[4] = lt_cmp;
     for (int d = 0; d < k; d++) q_clear(qs[d]);
     delete[] qs;
     return 1;
 }
-API int bench_stat(int i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; }
+API int bench_stat(int i) { return (i >= 0 && i < 5) ? BENCH[i] : 0; }
+
+API int  job_exists(int job)          { return ht_find(job) ? 1 : 0; }
+API int  job_dept(int job)            { HNode* e = ht_find(job); return e ? e->dept : -1; }
+API int  job_time(int job)            { HNode* e = ht_find(job); return e ? e->time : -1; }
+API int  set_duration(int job, int d) {
+    if (d < 1) return 0;
+    HNode* e = ht_find(job);
+    if (!e) return 0;
+    e->dur = d;
+    return 1;
+}
+API int  get_duration(int job)        { HNode* e = ht_find(job); return e ? e->dur : -1; }
+API int  add_job_raw(int d, int time, int job) {
+    if (d < 0 || d >= MAX_DEPTS) return 2;
+    if (time < 0) return 3;
+    if (ht_find(job)) return 4;
+    int pos = Q[d].count;
+    q_push(Q[d], job, time, d);
+    ht_insert(job, d, time);
+    record_op(1, d, job, time, 1, 0, pos);
+    return 0;
+}
+API int  sort_queue(int d) {
+    if (d < 0 || d >= MAX_DEPTS) return -1;
+    if (Q[d].head && Q[d].head->next) {
+        Q[d].head = ll_mergesort(Q[d].head);
+        Node* p = Q[d].head;
+        int cnt = 0;
+        Node* last = nullptr;
+        while (p) { last = p; cnt++; p = p->next; }
+        Q[d].tail = last;
+        Q[d].count = cnt;
+    }
+    return Q[d].count;
+}
+API int  is_sorted(int d) {
+    if (d < 0 || d >= MAX_DEPTS) return 0;
+    for (Node* p = Q[d].head; p && p->next; p = p->next) {
+        if (p->time > p->next->time) return 0;
+    }
+    return 1;
+}
+API int  undo() {
+    if (UNDO_ST.n == 0) return 0;
+    Op op = UNDO_ST.pop();
+    if (op.type == 1) {
+        HNode* e = ht_find(op.job);
+        if (e) { op.dur = e->dur; op.prio = e->prio; }
+        int pos = 0;
+        q_remove(Q[op.dept], op.job, &pos, nullptr);
+        op.pos = pos;
+        ht_remove(op.job);
+    } else {
+        q_insert_at(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        ht_insert(op.job, op.dept, op.time, op.dur, op.prio);
+    }
+    REDO_ST.push(op);
+    LAST_OP = op; HAS_LAST_OP = true;
+    return 1;
+}
+API int  redo() {
+    if (REDO_ST.n == 0) return 0;
+    Op op = REDO_ST.pop();
+    if (op.type == 1) {
+        q_insert_at(Q[op.dept], op.pos, op.job, op.time, op.dept);
+        ht_insert(op.job, op.dept, op.time, op.dur, op.prio);
+    } else {
+        HNode* e = ht_find(op.job);
+        if (e) { op.dur = e->dur; op.prio = e->prio; }
+        int pos = 0;
+        q_remove(Q[op.dept], op.job, &pos, nullptr);
+        op.pos = pos;
+        ht_remove(op.job);
+    }
+    UNDO_ST.push(op);
+    LAST_OP = op; HAS_LAST_OP = true;
+    return 1;
+}
+API int  undo_count()                 { return UNDO_ST.n; }
+API int  redo_count()                 { return REDO_ST.n; }
+API int  op_field(int f) {
+    if (!HAS_LAST_OP) return -1;
+    switch (f) {
+        case 0: return LAST_OP.type;
+        case 1: return LAST_OP.dept;
+        case 2: return LAST_OP.job;
+        case 3: return LAST_OP.time;
+    }
+    return -1;
+}
+API int  merge_lt(int logOn) {
+    (void)logOn;
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear();
+    RECEIVED = ACTIVE = 0;
+    for (int d = 0; d < MAX_DEPTS; d++) { RECEIVED += Q[d].count; if (Q[d].count) ACTIVE++; }
+    merge_lt_run(Q, RANK, MAX_DEPTS, true, ST_ins, ST_ext, ST_cmp);
+    tl_finalize();
+    ST_alg = 1;
+    return TL_n;
+}
+API int  merge_naive() {
+    tl_free(); sched_clear(); LOG.clear(); LOGIDX.clear();
+    RECEIVED = ACTIVE = 0;
+    Node* cur[MAX_DEPTS];
+    for (int d = 0; d < MAX_DEPTS; d++) {
+        cur[d] = Q[d].head;
+        RECEIVED += Q[d].count;
+        if (Q[d].count) ACTIVE++;
+    }
+    ST_ins = ACTIVE; ST_ext = 0; ST_cmp = 0; ST_alg = 2;
+    for (;;) {
+        int best = -1;
+        for (int d = 0; d < MAX_DEPTS; d++) {
+            if (!cur[d]) continue;
+            if (best < 0) { best = d; continue; }
+            ST_cmp++;
+            if (cur[d]->time < cur[best]->time ||
+                (cur[d]->time == cur[best]->time && RANK[d] < RANK[best])) {
+                best = d;
+            }
+        }
+        if (best < 0) break;
+        Node* n = cur[best];
+        tl_push(n->job, n->time, best);
+        ST_ext++;
+        cur[best] = n->next;
+        if (cur[best]) ST_ins++;
+    }
+    tl_finalize();
+    return TL_n;
+}
+API int  tl_job(int i)                { return (i >= 0 && i < TL_JOBS.n) ? TL_JOBS.a[i] : -1; }
+API int  tl_time(int i)               { return (i >= 0 && i < TL_TIMES.n) ? TL_TIMES.a[i] : -1; }
+API int  tl_dept(int i)               { return (i >= 0 && i < TL_DEPTS.n) ? TL_DEPTS.a[i] : -1; }
+API int  tl_lower_bound(int t) {
+    int lo = 0, hi = TL_TIMES.n;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (TL_TIMES.a[mid] < t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+API int  tl_upper_bound(int t) {
+    int lo = 0, hi = TL_TIMES.n;
+    while (lo < hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (TL_TIMES.a[mid] <= t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+API int  find_in_timeline(int job) {
+    HNode* e = ht_find(job);
+    return e ? e->tl_idx : -1;
+}
+API int  sched_run(int printers) {
+    if (printers < 1 || printers > MAX_PRINTERS) return -1;
+    sched_clear();
+    if (TL_n == 0) return 0;
+    PrinterSlot hp[MAX_PRINTERS];
+    for (int p = 0; p < printers; p++) hp[p] = PrinterSlot{0, p};
+    int makespan = 0;
+    for (int i = 0; i < TL_n; i++) {
+        int job = TL_JOBS.a[i];
+        int jtime = TL_TIMES.a[i];
+        HNode* e = ht_find(job);
+        int dur = e ? e->dur : 1;
+        int p = hp[0].idx;
+        int start = (hp[0].free_at > jtime) ? hp[0].free_at : jtime;
+        int end = start + dur;
+        SCHED_JOB.push(job);
+        SCHED_PRINTER.push(p);
+        SCHED_START.push(start);
+        SCHED_END.push(end);
+        SCHED_LOAD[p] += dur;
+        if (end > makespan) makespan = end;
+        hp[0].free_at = end;
+        hp_sift_down(hp, printers, 0);
+    }
+    return makespan;
+}
+API int  sched_count()                { return SCHED_JOB.n; }
+API int  sched_job(int i)             { return (i >= 0 && i < SCHED_JOB.n) ? SCHED_JOB.a[i] : -1; }
+API int  sched_printer(int i)         { return (i >= 0 && i < SCHED_PRINTER.n) ? SCHED_PRINTER.a[i] : -1; }
+API int  sched_start(int i)           { return (i >= 0 && i < SCHED_START.n) ? SCHED_START.a[i] : -1; }
+API int  sched_end(int i)             { return (i >= 0 && i < SCHED_END.n) ? SCHED_END.a[i] : -1; }
+API int  sched_load(int p)            { return (p >= 0 && p < MAX_PRINTERS) ? SCHED_LOAD[p] : 0; }
+API int  spool_cancel(int job) {
+    if (!SP || SPn == 0) return 0;
+    for (int k = 0; k < SPn; k++) {
+        int idx = (SPf + k) % SPcap;
+        if (SP[idx] == job) {
+            for (int j = k; j < SPn - 1; j++) {
+                int cur = (SPf + j) % SPcap;
+                int nxt = (SPf + j + 1) % SPcap;
+                SP[cur] = SP[nxt];
+            }
+            SPr = (SPr - 1 + SPcap) % SPcap;
+            SP[SPr] = -1;
+            SPn--;
+            return 1;
+        }
+    }
+    return 0;
+}
+API void spool_pause(int flag)        { SPpaused = (flag != 0) ? 1 : 0; }
+API int  spool_paused()               { return SPpaused; }

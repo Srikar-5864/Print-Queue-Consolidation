@@ -4,7 +4,12 @@
 const ENGINE_FUNCS = ['init', 'set_rank', 'add_job', 'delete_job', 'clear_queue', 'q_count',
   'export_queue', 'export_timeline', 'exp_job', 'exp_time', 'exp_dept', 'merge', 'tl_len', 'stat',
   'verify_timeline', 'log_len', 'log_field', 'spool_init', 'spool_enqueue', 'spool_dequeue',
-  'spool_size', 'spool_front', 'spool_rear', 'spool_cap', 'spool_slot', 'bench', 'bench_stat'];
+  'spool_size', 'spool_front', 'spool_rear', 'spool_cap', 'spool_slot', 'bench', 'bench_stat',
+  'job_exists', 'job_dept', 'job_time', 'set_duration', 'get_duration', 'add_job_raw',
+  'sort_queue', 'is_sorted', 'undo', 'redo', 'undo_count', 'redo_count', 'op_field',
+  'merge_lt', 'merge_naive', 'tl_job', 'tl_time', 'tl_dept', 'tl_lower_bound', 'tl_upper_bound',
+  'find_in_timeline', 'sched_run', 'sched_count', 'sched_job', 'sched_printer', 'sched_start',
+  'sched_end', 'sched_load', 'spool_cancel', 'spool_pause', 'spool_paused'];
 
 function selfTest(c) {
   c.init(); c.set_rank(0, 0); c.set_rank(1, 1);

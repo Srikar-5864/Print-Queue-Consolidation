@@ -108,4 +108,17 @@ Frontend is plain HTML, CSS and JavaScript with no frameworks or chart libraries
 
 Up to 200 departments and 100,000 total jobs. Input queues must already be sorted (the site enforces this
 when jobs are submitted). No printer connection is used.
-# Print-Queue-Consolidation
+
+## Algorithms (Part A)
+
+| Task | Structure / Algorithm | Complexity |
+|---|---|---|
+| A1 | Hash table (separate chaining, multiplicative hash, 0.7 load-factor rehash) | O(1) average lookup, insert, delete |
+| A2 | Stable merge sort on a singly linked list (slow/fast split + iterative merge) | O(n log n) time, O(1) extra space |
+| A3 | Two stacks (undo and redo on dynamic arrays) | O(1) per operation (+ O(n) to locate queue position) |
+| A4 | Loser (tournament) tree merge and naive scan baseline | O(N log k) (~log2 k comparisons/job) and O(N k) |
+| A5 | Flat timeline arrays + binary search (`tl_lower_bound`, `tl_upper_bound`) | O(log N) |
+| A6 | Multi-printer scheduler using a min-heap of printers | O(N log P) |
+| A7 | Circular queue pause flag and order-preserving cancel | O(n) cancel, O(1) pause |
+| A8 | C++ / JS parity and 200x100k stress tests (`./run_parity.sh`) | — |
+
