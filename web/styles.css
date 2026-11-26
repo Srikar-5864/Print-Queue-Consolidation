@@ -15,7 +15,7 @@ h1,h2,h3{margin:0;line-height:1.2}
 
 /* brand + nav (as in the example UI) */
 .brandbar{display:flex;align-items:center;gap:14px;background:#fff;padding:10px 28px}
-.crest{width:84px;height:84px}.crest.small{width:52px;height:52px}
+.crest{width:84px;height:84px;border-radius:50%;object-fit:cover}.crest.small{width:52px;height:52px}
 .welcome{display:block;font-style:italic;font-weight:600;font-size:13px;color:var(--navy)}
 #collegeName{font-size:22px;color:var(--navy);letter-spacing:.2px}
 .topnav{display:flex;align-items:center;gap:6px;background:var(--navy);padding:8px 28px;flex-wrap:wrap}
