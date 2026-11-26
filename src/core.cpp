@@ -72,6 +72,99 @@ static void q_clear(Queue& q) {
     q.tail = nullptr; q.count = 0;
 }
 
+// ---------------------------------------------------------------- hash table (A1)
+struct HNode {
+    int job, dept, time, dur, tl_idx, prio;
+    HNode* next;
+};
+static HNode** HT_buckets = nullptr;
+static int HT_cap = 0;
+static int HT_n = 0;
+
+static int ht_hash(int key, int cap) {
+    unsigned int x = (unsigned int)key;
+    x = ((x >> 16) ^ x) * 0x45d9f3bu;
+    x = ((x >> 16) ^ x) * 0x45d9f3bu;
+    x = (x >> 16) ^ x;
+    return (int)(x % (unsigned int)cap);
+}
+
+static void ht_clear() {
+    for (int i = 0; i < HT_cap; i++) {
+        HNode* p = HT_buckets[i];
+        while (p) { HNode* t = p; p = p->next; delete t; }
+        HT_buckets[i] = nullptr;
+    }
+    HT_n = 0;
+}
+
+static void ht_init(int cap = 128) {
+    if (HT_buckets) { ht_clear(); delete[] HT_buckets; }
+    HT_cap = cap;
+    HT_buckets = new HNode*[HT_cap];
+    for (int i = 0; i < HT_cap; i++) HT_buckets[i] = nullptr;
+    HT_n = 0;
+}
+
+static void ht_rehash(int new_cap) {
+    HNode** nb = new HNode*[new_cap];
+    for (int i = 0; i < new_cap; i++) nb[i] = nullptr;
+    for (int i = 0; i < HT_cap; i++) {
+        HNode* p = HT_buckets[i];
+        while (p) {
+            HNode* nxt = p->next;
+            int idx = ht_hash(p->job, new_cap);
+            p->next = nb[idx];
+            nb[idx] = p;
+            p = nxt;
+        }
+    }
+    delete[] HT_buckets;
+    HT_buckets = nb;
+    HT_cap = new_cap;
+}
+
+static HNode* ht_find(int job) {
+    if (!HT_buckets || HT_cap == 0) return nullptr;
+    int idx = ht_hash(job, HT_cap);
+    for (HNode* p = HT_buckets[idx]; p; p = p->next) {
+        if (p->job == job) return p;
+    }
+    return nullptr;
+}
+
+static void ht_insert(int job, int dept, int time, int dur = 1, int prio = 0) {
+    if (!HT_buckets || HT_cap == 0) ht_init(128);
+    if ((HT_n + 1) * 10 > HT_cap * 7) ht_rehash(HT_cap * 2);
+    int idx = ht_hash(job, HT_cap);
+    HNode* n = new HNode{job, dept, time, dur, -1, prio, HT_buckets[idx]};
+    HT_buckets[idx] = n;
+    HT_n++;
+}
+
+static bool ht_remove(int job) {
+    if (!HT_buckets || HT_cap == 0) return false;
+    int idx = ht_hash(job, HT_cap);
+    HNode* prev = nullptr;
+    HNode* cur = HT_buckets[idx];
+    while (cur) {
+        if (cur->job == job) {
+            if (prev) prev->next = cur->next; else HT_buckets[idx] = cur->next;
+            delete cur;
+            HT_n--;
+            return true;
+        }
+        prev = cur; cur = cur->next;
+    }
+    return false;
+}
+
+static void ht_reset_tl() {
+    for (int i = 0; i < HT_cap; i++) {
+        for (HNode* p = HT_buckets[i]; p; p = p->next) p->tl_idx = -1;
+    }
+}
+
 // ---------------------------------------------------------------- global state
 static Queue Q[MAX_DEPTS];            // one linked queue per department slot
 static int   RANK[MAX_DEPTS];         // alphabetical rank of the department code
@@ -165,21 +258,35 @@ static void merge_run(Merger& m) {
 // =============================================================== exported API
 API void init() {
     for (int d = 0; d < MAX_DEPTS; d++) { q_clear(Q[d]); RANK[d] = d; }
+    ht_init(128);
     tl_free(); LOG.clear(); LOGIDX.clear(); EX.clear();
     RECEIVED = ACTIVE = ST_ins = ST_ext = ST_cmp = 0;
 }
 API void set_rank(int d, int r) { if (d >= 0 && d < MAX_DEPTS) RANK[d] = r; }
 
-// 0 = ok, 1 = time earlier than the last job of that queue, 2 = bad department, 3 = bad time
+// 0 = ok, 1 = time earlier than the last job of that queue, 2 = bad department, 3 = bad time, 4 = duplicate job ID
 API int add_job(int d, int time, int job) {
     if (d < 0 || d >= MAX_DEPTS) return 2;
     if (time < 0) return 3;
+    if (ht_find(job)) return 4;
     if (Q[d].tail && time < Q[d].tail->time) return 1;
     q_push(Q[d], job, time, d);
+    ht_insert(job, d, time);
     return 0;
 }
-API int  delete_job(int d, int job) { return (d >= 0 && d < MAX_DEPTS && q_remove(Q[d], job)) ? 1 : 0; }
-API void clear_queue(int d)         { if (d >= 0 && d < MAX_DEPTS) q_clear(Q[d]); }
+API int  delete_job(int d, int job) {
+    if (d >= 0 && d < MAX_DEPTS && q_remove(Q[d], job)) {
+        ht_remove(job);
+        return 1;
+    }
+    return 0;
+}
+API void clear_queue(int d) {
+    if (d >= 0 && d < MAX_DEPTS) {
+        for (Node* p = Q[d].head; p; p = p->next) ht_remove(p->job);
+        q_clear(Q[d]);
+    }
+}
 API int  q_count(int d)             { return (d >= 0 && d < MAX_DEPTS) ? Q[d].count : 0; }
 
 // Copy a queue / the timeline into the export buffer (one traversal), then read O(1).
@@ -302,16 +409,23 @@ API int bench(int k, int n) {
 }
 API int bench_stat(int i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; }
 
-// ------------------------------------------------------------ Day-1 stubs
-API int  job_exists(int job)          { (void)job; return 0; }
-API int  job_dept(int job)            { (void)job; return -1; }
-API int  job_time(int job)            { (void)job; return -1; }
-API int  set_duration(int job, int d) { (void)job; (void)d; return 1; }
-API int  get_duration(int job)        { (void)job; return -1; }
+API int  job_exists(int job)          { return ht_find(job) ? 1 : 0; }
+API int  job_dept(int job)            { HNode* e = ht_find(job); return e ? e->dept : -1; }
+API int  job_time(int job)            { HNode* e = ht_find(job); return e ? e->time : -1; }
+API int  set_duration(int job, int d) {
+    if (d < 1) return 0;
+    HNode* e = ht_find(job);
+    if (!e) return 0;
+    e->dur = d;
+    return 1;
+}
+API int  get_duration(int job)        { HNode* e = ht_find(job); return e ? e->dur : -1; }
 API int  add_job_raw(int d, int time, int job) {
     if (d < 0 || d >= MAX_DEPTS) return 2;
     if (time < 0) return 3;
+    if (ht_find(job)) return 4;
     q_push(Q[d], job, time, d);
+    ht_insert(job, d, time);
     return 0;
 }
 API int  sort_queue(int d)            { return (d < 0 || d >= MAX_DEPTS) ? -1 : Q[d].count; }

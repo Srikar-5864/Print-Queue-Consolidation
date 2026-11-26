@@ -12,6 +12,67 @@ function makeJsCore() {
   let SP = null, SPcap = 0, SPf = 0, SPr = 0, SPn = 0;
   let seed = 0;
 
+  // Hash table (A1)
+  let HT_cap = 128, HT_n = 0;
+  let HT_buckets = new Array(HT_cap).fill(null);
+  function htHash(key, cap) {
+    let x = key >>> 0;
+    x = Math.imul((x >>> 16) ^ x, 0x45d9f3b) >>> 0;
+    x = Math.imul((x >>> 16) ^ x, 0x45d9f3b) >>> 0;
+    x = ((x >>> 16) ^ x) >>> 0;
+    return x % cap;
+  }
+  function htInit(cap = 128) {
+    HT_cap = cap; HT_n = 0;
+    HT_buckets = new Array(HT_cap).fill(null);
+  }
+  function htRehash(newCap) {
+    const nb = new Array(newCap).fill(null);
+    for (let i = 0; i < HT_cap; i++) {
+      let p = HT_buckets[i];
+      while (p) {
+        const nxt = p.next;
+        const idx = htHash(p.job, newCap);
+        p.next = nb[idx];
+        nb[idx] = p;
+        p = nxt;
+      }
+    }
+    HT_buckets = nb;
+    HT_cap = newCap;
+  }
+  function htFind(job) {
+    const idx = htHash(job, HT_cap);
+    for (let p = HT_buckets[idx]; p; p = p.next) {
+      if (p.job === job) return p;
+    }
+    return null;
+  }
+  function htInsert(job, dept, time, dur = 1, prio = 0) {
+    if ((HT_n + 1) * 10 > HT_cap * 7) htRehash(HT_cap * 2);
+    const idx = htHash(job, HT_cap);
+    HT_buckets[idx] = { job, dept, time, dur, tl_idx: -1, prio, next: HT_buckets[idx] };
+    HT_n++;
+  }
+  function htRemove(job) {
+    const idx = htHash(job, HT_cap);
+    let prev = null, cur = HT_buckets[idx];
+    while (cur) {
+      if (cur.job === job) {
+        if (prev) prev.next = cur.next; else HT_buckets[idx] = cur.next;
+        HT_n--;
+        return true;
+      }
+      prev = cur; cur = cur.next;
+    }
+    return false;
+  }
+  function htResetTl() {
+    for (let i = 0; i < HT_cap; i++) {
+      for (let p = HT_buckets[i]; p; p = p.next) p.tl_idx = -1;
+    }
+  }
+
   const qPush = (q, job, time, dept) => {
     const n = { job, time, dept, next: null };
     if (q.tail) q.tail.next = n; else q.head = n;
@@ -96,6 +157,7 @@ function makeJsCore() {
     name: 'JavaScript port',
     init() {
       for (let d = 0; d < MAX; d++) { qClear(Q[d]); RANK[d] = d; }
+      htInit(128);
       tlFree(); LOG = []; LOGIDX = []; EX = [];
       RECEIVED = ACTIVE = 0; ST = { ins: 0, ext: 0, cmp: 0 };
     },
@@ -103,11 +165,20 @@ function makeJsCore() {
     add_job(d, time, job) {
       if (d < 0 || d >= MAX) return 2;
       if (time < 0) return 3;
+      if (htFind(job)) return 4;
       if (Q[d].tail && time < Q[d].tail.time) return 1;
-      qPush(Q[d], job, time, d); return 0;
+      qPush(Q[d], job, time, d); htInsert(job, d, time); return 0;
     },
-    delete_job(d, job) { return (d >= 0 && d < MAX && qRemove(Q[d], job)) ? 1 : 0; },
-    clear_queue(d) { if (d >= 0 && d < MAX) qClear(Q[d]); },
+    delete_job(d, job) {
+      if (d >= 0 && d < MAX && qRemove(Q[d], job)) { htRemove(job); return 1; }
+      return 0;
+    },
+    clear_queue(d) {
+      if (d >= 0 && d < MAX) {
+        for (let p = Q[d].head; p; p = p.next) htRemove(p.job);
+        qClear(Q[d]);
+      }
+    },
     q_count(d) { return (d >= 0 && d < MAX) ? Q[d].count : 0; },
     export_queue(d) {
       EX = [];
@@ -191,16 +262,21 @@ function makeJsCore() {
       BENCH[1] = cmp; return 1;
     },
     bench_stat(i) { return (i >= 0 && i < 4) ? BENCH[i] : 0; },
-    // Day-1 stubs
-    job_exists(job) { return 0; },
-    job_dept(job) { return -1; },
-    job_time(job) { return -1; },
-    set_duration(job, dur) { return 1; },
-    get_duration(job) { return -1; },
+    job_exists(job) { return htFind(job) ? 1 : 0; },
+    job_dept(job) { const e = htFind(job); return e ? e.dept : -1; },
+    job_time(job) { const e = htFind(job); return e ? e.time : -1; },
+    set_duration(job, dur) {
+      if (dur < 1) return 0;
+      const e = htFind(job);
+      if (!e) return 0;
+      e.dur = dur; return 1;
+    },
+    get_duration(job) { const e = htFind(job); return e ? e.dur : -1; },
     add_job_raw(d, time, job) {
       if (d < 0 || d >= MAX) return 2;
       if (time < 0) return 3;
-      qPush(Q[d], job, time, d); return 0;
+      if (htFind(job)) return 4;
+      qPush(Q[d], job, time, d); htInsert(job, d, time); return 0;
     },
     sort_queue(d) { return (d < 0 || d >= MAX) ? -1 : Q[d].count; },
     is_sorted(d) { return 1; },

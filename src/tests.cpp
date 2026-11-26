@@ -138,10 +138,48 @@ static void test_log_and_spooler() {
     CHECK(spool_dequeue() == -1 && spool_size() == 0, "empty queue returns -1");
 }
 
+static void test_hash_table() {
+    printf("[9] A1: Hash table for job IDs\n");
+    init();
+    CHECK(add_job(0, 5, 100) == 0, "insert job 100");
+    CHECK(add_job(1, 6, 100) == 4, "duplicate job ID rejected with 4");
+    CHECK(add_job_raw(1, 6, 100) == 4, "add_job_raw duplicate rejected with 4");
+    CHECK(job_exists(100) == 1 && job_dept(100) == 0 && job_time(100) == 5, "lookup returns correct dept and time");
+    CHECK(get_duration(100) == 1 && set_duration(100, 7) == 1 && get_duration(100) == 7, "duration default 1, set to 7");
+    CHECK(set_duration(100, 0) == 0 && set_duration(999, 3) == 0, "invalid duration or unknown job rejected");
+    CHECK(delete_job(0, 100) == 1 && job_exists(100) == 0 && job_dept(100) == -1 && job_time(100) == -1, "lookup after delete gives exists 0");
+    CHECK(add_job(0, 5, 100) == 0, "deleted job ID can be reinserted");
+    clear_queue(0);
+    CHECK(job_exists(100) == 0, "clear_queue removes jobs from hash table");
+
+    init();
+    int ok = 1;
+    for (int i = 0; i < 100000; i++) {
+        if (add_job(i % MAX_DEPTS, i, i) != 0) { ok = 0; break; }
+    }
+    for (int i = 0; i < 100000 && ok; i += 97) {
+        if (!job_exists(i) || job_dept(i) != (i % MAX_DEPTS) || job_time(i) != i) ok = 0;
+    }
+    CHECK(ok && HT_cap > 128, "100,000 inserts trigger resizes and all lookups succeed");
+
+    // Many IDs forced into same/similar buckets (multiples of HT_cap)
+    init();
+    int cap0 = HT_cap;
+    int col_ok = 1;
+    for (int i = 0; i < 50; i++) {
+        if (add_job(0, i, i * cap0) != 0) col_ok = 0;
+    }
+    for (int i = 0; i < 50; i++) {
+        if (job_exists(i * cap0) != 1 || job_time(i * cap0) != i) col_ok = 0;
+    }
+    CHECK(col_ok, "many IDs with colliding patterns still work");
+}
+
 int main(int argc, char** argv) {
     (void)argv;
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
+    test_hash_table();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);
