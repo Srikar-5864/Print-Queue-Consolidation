@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Question Paper Printing - Print Queue Consolidation</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="login" class="login" hidden>
+  <div class="login-card">
+    <svg class="crest" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 3 56 12v20c0 14-10 24-24 29C18 56 8 46 8 32V12z" fill="#0b4a9f"/><path d="M32 10 49 16v16c0 10-7 18-17 22-10-4-17-12-17-22V16z" fill="#ffd21f"/><path d="M22 28h20v4H22zm4 8h12v4H26z" fill="#0b4a9f"/></svg>
+    <h1>Question Paper Printing</h1>
+    <p class="muted">Sign in to submit or merge print jobs.</p>
+    <label for="loginRole">Sign in as</label>
+    <select id="loginRole"></select>
+    <label for="loginPin">PIN</label>
+    <input id="loginPin" type="password" autocomplete="off" placeholder="Enter PIN">
+    <p id="loginErr" class="err" role="alert"></p>
+    <button id="loginBtn" class="btn primary wide">Sign in</button>
+    <p class="hint">Demo PINs: every branch uses <b>1234</b>, the operator uses <b>admin</b>. Login is simulated in the browser and is not secure.</p>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header class="brandbar">
+    <svg class="crest small" viewBox="0 0 64 64" aria-hidden="true"><path d="M32 3 56 12v20c0 14-10 24-24 29C18 56 8 46 8 32V12z" fill="#0b4a9f"/><path d="M32 10 49 16v16c0 10-7 18-17 22-10-4-17-12-17-22V16z" fill="#ffd21f"/><path d="M22 28h20v4H22zm4 8h12v4H26z" fill="#0b4a9f"/></svg>
+    <div><span class="welcome">Welcome to</span><strong id="collegeName"></strong></div>
+  </header>
+  <nav class="topnav" aria-label="Main">
+    <button data-nav="dashboard" class="tab">Home</button>
+    <button data-nav="about" class="tab">About</button>
+    <button data-nav="help" class="tab">Help</button>
+    <span class="grow"></span>
+    <span class="who" id="whoChip"></span>
+    <button class="tab" data-act="logout">Logout</button>
+  </nav>
+  <div class="layout">
+    <aside class="side" id="side" aria-label="Sections"></aside>
+    <main id="view"></main>
+  </div>
+</div>
+
+<script src="core_js.js"></script>
+<script src="engine.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
