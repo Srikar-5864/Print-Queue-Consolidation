@@ -377,12 +377,136 @@ static void test_spooler_pause_cancel() {
     CHECK(spool_dequeue() == 40 && spool_size() == 0 && spool_dequeue() == -1, "remaining item dequeued in order");
 }
 
+static void test_stress_all_merges() {
+    printf("[16] A8: Stress test (200 queues, 100000 jobs across all 3 merges)\n");
+    init();
+    seed_ = 314159u;
+    int last[MAX_DEPTS];
+    for (int d = 0; d < MAX_DEPTS; d++) last[d] = 0;
+    for (int j = 0; j < 100000; j++) {
+        int d = (int)(rnd() % MAX_DEPTS);
+        last[d] += (int)(rnd() % 3u);
+        add_job(d, last[d], j);
+    }
+    int n_heap = merge(0);
+    int cmp_heap = stat(4);
+    int* t_heap = new int[n_heap];
+    for (int i = 0; i < n_heap; i++) t_heap[i] = tl_job(i);
+
+    int n_lt = merge_lt(0);
+    int cmp_lt = stat(4);
+    int eq_lt = (n_lt == n_heap);
+    for (int i = 0; i < n_lt && eq_lt; i++) if (tl_job(i) != t_heap[i]) eq_lt = 0;
+
+    int n_naive = merge_naive();
+    int cmp_naive = stat(4);
+    int eq_naive = (n_naive == n_heap);
+    for (int i = 0; i < n_naive && eq_naive; i++) if (tl_job(i) != t_heap[i]) eq_naive = 0;
+
+    printf("      200x100k  heap=%d  loser=%d  naive=%d\n", cmp_heap, cmp_lt, cmp_naive);
+    CHECK(n_heap == 100000 && eq_lt && eq_naive, "all 3 merges produce identical 100000-job timelines");
+    CHECK(cmp_lt <= cmp_heap && cmp_heap < cmp_naive / 10, "loser <= heap << naive comparisons");
+    delete[] t_heap;
+}
+
+static unsigned int mix_hash(unsigned int h, int v) {
+    h ^= (unsigned int)v;
+    h *= 16777619u;
+    return h;
+}
+
+static void run_parity_mode() {
+    for (int sc = 0; sc < 50; sc++) {
+        init();
+        seed_ = (unsigned int)(10000 + sc * 7919);
+        int k = 2 + (int)(rnd() % 15u);
+        int perm[20];
+        for (int d = 0; d < k; d++) perm[d] = d;
+        for (int d = k - 1; d > 0; d--) {
+            int j = (int)(rnd() % (unsigned)(d + 1));
+            int t = perm[d]; perm[d] = perm[j]; perm[j] = t;
+        }
+        for (int d = 0; d < k; d++) set_rank(d, perm[d]);
+
+        int ops = 30 + (int)(rnd() % 150u);
+        int active[200]; int an = 0; int next_id = 1;
+        for (int i = 0; i < ops; i++) {
+            int act = (int)(rnd() % 10u);
+            if (act < 6 || an == 0) {
+                int d = (int)(rnd() % (unsigned)k);
+                int t = (int)(rnd() % 40u);
+                int jid = next_id++;
+                if (add_job_raw(d, t, jid) == 0) {
+                    if ((rnd() % 3u) == 0) set_duration(jid, 1 + (int)(rnd() % 5u));
+                    active[an++] = jid;
+                }
+            } else if (act < 8) {
+                int pick = (int)(rnd() % (unsigned)an);
+                int jid = active[pick];
+                delete_job(job_dept(jid), jid);
+                active[pick] = active[--an];
+            } else if (act == 8) {
+                undo();
+            } else {
+                redo();
+            }
+        }
+        for (int d = 0; d < k; d++) sort_queue(d);
+
+        unsigned int h = 2166136261u;
+        int n1 = merge(0); int c_heap = stat(4);
+        h = mix_hash(h, n1); h = mix_hash(h, c_heap);
+        for (int i = 0; i < n1; i++) {
+            h = mix_hash(h, tl_job(i));
+            h = mix_hash(h, tl_time(i));
+            h = mix_hash(h, tl_dept(i));
+        }
+        h = mix_hash(h, tl_lower_bound(15));
+        h = mix_hash(h, tl_upper_bound(15));
+        if (n1 > 0) h = mix_hash(h, find_in_timeline(tl_job(n1 / 2)));
+
+        int n2 = merge_lt(0); int c_lt = stat(4);
+        h = mix_hash(h, n2); h = mix_hash(h, c_lt);
+        for (int i = 0; i < n2; i++) h = mix_hash(h, tl_job(i));
+
+        int n3 = merge_naive(); int c_naive = stat(4);
+        h = mix_hash(h, n3); h = mix_hash(h, c_naive);
+        for (int i = 0; i < n3; i++) h = mix_hash(h, tl_job(i));
+
+        int printers = 1 + (sc % 4);
+        int mk = sched_run(printers);
+        h = mix_hash(h, mk);
+        h = mix_hash(h, sched_count());
+        for (int i = 0; i < sched_count(); i++) {
+            h = mix_hash(h, sched_printer(i));
+            h = mix_hash(h, sched_start(i));
+            h = mix_hash(h, sched_end(i));
+        }
+        for (int p = 0; p < printers; p++) h = mix_hash(h, sched_load(p));
+
+        spool_init(5);
+        for (int i = 0; i < 4 && i < n1; i++) spool_enqueue(tl_job(i));
+        if (n1 > 1) spool_cancel(tl_job(1));
+        spool_pause(1);
+        h = mix_hash(h, spool_dequeue());
+        spool_pause(0);
+        h = mix_hash(h, spool_dequeue());
+        h = mix_hash(h, spool_size());
+
+        printf("PARITY %d %u %d %d %d %d %d\n", sc, h, n1, c_heap, c_lt, c_naive, mk);
+    }
+}
+
 int main(int argc, char** argv) {
-    (void)argv;
+    if (argc > 1 && argv[1][0] == '-' && argv[1][1] == '-') {
+        run_parity_mode();
+        return 0;
+    }
     test_example(); test_ties(); test_empty(); test_uneven();
     test_validation_and_delete(); test_many_queues(); test_growth(); test_log_and_spooler();
     test_hash_table(); test_sort_queue(); test_undo_redo(); test_loser_and_naive_merge();
     test_timeline_search(); test_scheduler(); test_spooler_pause_cancel();
+    test_stress_all_merges();
     if (argc > 1) {                                           // cross-check dump for the JS port
         init(); add_job(0, 2, 0); add_job(0, 7, 1); add_job(0, 9, 2); add_job(1, 1, 3);
         add_job(1, 7, 4); add_job(2, 3, 5); add_job(2, 10, 6);
